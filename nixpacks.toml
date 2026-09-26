@@ -3,3 +3,6 @@ providers = ["node"]
 
 [variables]
 NIXPACKS_NODE_VERSION = "20"
+# Railway often sets NODE_ENV=production during install, which skips
+# devDependencies. Build needs typescript/@types/node; start needs prisma CLI.
+NPM_CONFIG_PRODUCTION = "false"
