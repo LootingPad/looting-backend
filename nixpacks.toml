@@ -1,0 +1,5 @@
+# Pin Node to match local/CI (package-lock was generated with Node 20).
+providers = ["node"]
+
+[variables]
+NIXPACKS_NODE_VERSION = "20"
