@@ -3,13 +3,24 @@ import Fastify from "fastify";
 import { env } from "./config/env.js";
 import { prisma } from "./db/prisma.js";
 import { registerAdminRoutes } from "./modules/admin.js";
+import { registerAnalyticsRoutes } from "./modules/analytics.js";
 import { registerChartRoutes, registerMetadataRoutes } from "./modules/charts.js";
+import {
+  registerRewardTableRoutes,
+  registerStakingConfigRoutes,
+} from "./modules/config-public.js";
+import { registerFeeClaimRoutes } from "./modules/fee-claims.js";
 import { registerFeeRoutes } from "./modules/fees.js";
 import { registerHealthRoutes } from "./modules/health.js";
 import { registerLaunchRoutes } from "./modules/launches.js";
 import { registerLeaderboardRoutes } from "./modules/leaderboard.js";
+import { registerLuckyBoxRoutes } from "./modules/lucky-boxes.js";
 import { registerPrepareRoutes, registerSwapRoutes } from "./modules/prepare.js";
 import { registerSeasonRoutes } from "./modules/seasons.js";
+import {
+  registerDevLockClaimRoutes,
+  registerStakingActionRoutes,
+} from "./modules/staking-actions.js";
 import { registerStakingRoutes } from "./modules/staking.js";
 import { registerWalletRoutes } from "./modules/wallet.js";
 
@@ -25,16 +36,24 @@ async function main() {
 
   await registerHealthRoutes(app);
   await registerFeeRoutes(app);
+  await registerFeeClaimRoutes(app);
   await registerLaunchRoutes(app);
   await registerWalletRoutes(app);
   await registerSeasonRoutes(app);
   await registerLeaderboardRoutes(app);
   await registerStakingRoutes(app);
+  await registerStakingConfigRoutes(app);
+  await registerStakingActionRoutes(app);
+  await registerDevLockClaimRoutes(app);
+  await registerLuckyBoxRoutes(app);
+  await registerRewardTableRoutes(app);
+  await registerAnalyticsRoutes(app);
   await registerChartRoutes(app);
   await registerMetadataRoutes(app);
   await registerPrepareRoutes(app);
   await registerSwapRoutes(app);
   await registerAdminRoutes(app);
+
 
   app.setErrorHandler((err, _req, reply) => {
     app.log.error(err);

@@ -222,6 +222,19 @@ async function handleVaultLog(log: Log, vaultDbId: string, vaultId: bigint) {
           stakerCount: existing ? undefined : { increment: 1 },
         },
       });
+
+      await prisma.stakingActivity.create({
+        data: {
+          chainId: env.CHAIN_ID,
+          vaultId: vaultId.toString(),
+          vaultDbId,
+          walletAddress: wallet,
+          kind: "stake",
+          lockId,
+          amount: amount.toString(),
+          txHash: log.transactionHash?.toLowerCase(),
+        },
+      });
     }
 
     if (decoded.eventName === "Unstaked") {
@@ -255,6 +268,19 @@ async function handleVaultLog(log: Log, vaultDbId: string, vaultId: bigint) {
           data: { totalStaked: { decrement: amount.toString() } },
         });
       }
+
+      await prisma.stakingActivity.create({
+        data: {
+          chainId: env.CHAIN_ID,
+          vaultId: vaultId.toString(),
+          vaultDbId,
+          walletAddress: wallet,
+          kind: "unstake",
+          lockId,
+          amount: amount.toString(),
+          txHash: log.transactionHash?.toLowerCase(),
+        },
+      });
     }
 
     if (decoded.eventName === "StakingRewardsClaimed") {
@@ -265,6 +291,19 @@ async function handleVaultLog(log: Log, vaultDbId: string, vaultId: bigint) {
       await prisma.stakingVault.update({
         where: { id: vaultDbId },
         data: { rewardRemaining: { decrement: amount.toString() } },
+      });
+      await prisma.stakingActivity.create({
+        data: {
+          chainId: env.CHAIN_ID,
+          vaultId: vaultId.toString(),
+          vaultDbId,
+          walletAddress: wallet,
+          kind: "claim",
+          lockId,
+          amount: "0",
+          reward: amount.toString(),
+          txHash: log.transactionHash?.toLowerCase(),
+        },
       });
     }
 

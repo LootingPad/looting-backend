@@ -163,6 +163,57 @@ export const stakingVaultAbi = [
       { name: "amount", type: "uint256", indexed: false },
     ],
   },
+  {
+    type: "function",
+    name: "stake",
+    stateMutability: "nonpayable",
+    inputs: [
+      { name: "amount", type: "uint256" },
+      { name: "lockId", type: "uint8" },
+    ],
+    outputs: [],
+  },
+  {
+    type: "function",
+    name: "unstake",
+    stateMutability: "nonpayable",
+    inputs: [
+      { name: "amount", type: "uint256" },
+      { name: "lockId", type: "uint8" },
+    ],
+    outputs: [],
+  },
+  {
+    type: "function",
+    name: "claimRewards",
+    stateMutability: "nonpayable",
+    inputs: [{ name: "lockId", type: "uint8" }],
+    outputs: [{ name: "paid", type: "uint256" }],
+  },
+  {
+    type: "function",
+    name: "pendingRewards",
+    stateMutability: "view",
+    inputs: [
+      { name: "wallet", type: "address" },
+      { name: "lockId", type: "uint8" },
+    ],
+    outputs: [{ type: "uint256" }],
+  },
+  {
+    type: "function",
+    name: "position",
+    stateMutability: "view",
+    inputs: [
+      { name: "wallet", type: "address" },
+      { name: "lockId", type: "uint8" },
+    ],
+    outputs: [
+      { name: "staked", type: "uint256" },
+      { name: "rewardDebtOrAccrued", type: "uint256" },
+      { name: "lockEndsAt", type: "uint64" },
+    ],
+  },
 ] as const;
 
 export const devLockAbi = [
@@ -212,6 +263,27 @@ export const devLockAbi = [
       { name: "cadence", type: "uint8" },
     ],
     outputs: [{ name: "lockId", type: "uint256" }],
+  },
+  {
+    type: "function",
+    name: "claim",
+    stateMutability: "nonpayable",
+    inputs: [{ name: "lockId", type: "uint256" }],
+    outputs: [{ name: "paid", type: "uint256" }],
+  },
+  {
+    type: "function",
+    name: "claimableAmount",
+    stateMutability: "view",
+    inputs: [{ name: "lockId", type: "uint256" }],
+    outputs: [{ type: "uint256" }],
+  },
+  {
+    type: "function",
+    name: "vestedAmount",
+    stateMutability: "view",
+    inputs: [{ name: "lockId", type: "uint256" }],
+    outputs: [{ type: "uint256" }],
   },
   {
     type: "function",

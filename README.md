@@ -50,52 +50,59 @@ Activate a season (once):
 
 ```bash
 ./scripts/activate-season.sh
-# or:
-curl -X POST https://<api>/api/admin/season \
-  -H "Authorization: Bearer $ADMIN_API_TOKEN" \
-  -H 'content-type: application/json' \
-  -d '{"seasonId":"s1","startsAt":"2026-09-26T00:00:00Z","endsAt":"2026-12-25T00:00:00Z","activate":true}'
 ```
-
-Production `ADMIN_API_TOKEN` must match the Railway variable (local
-`dev-admin-token` will get `403`).
 
 ## API surface (Spec §22)
 
 | Method | Path |
 |---|---|
 | GET | `/health` |
-| GET | `/api/fees` |
-| GET | `/api/launches`, `/api/launches/:token` |
+| GET | `/api/fees` (includes `ETH_USD`, `stakingLocks`) |
+| GET | `/api/launches` (each row includes `stats`) |
+| GET | `/api/launches/:token` |
+| GET | `/api/launches/:token/trades` |
+| GET | `/api/launches/:token/holders` |
 | GET | `/api/creator/:address/launches` |
 | GET | `/api/launch/:token/rewards` |
 | GET | `/api/seasons/current` |
-| GET | `/api/wallet/:address` (+ `/rewards`, `/lucky-boxes`, `/staking-positions`, `/dev-locks`) |
+| GET | `/api/wallet/:address` |
+| GET | `/api/wallet/:address/rewards` |
+| GET | `/api/wallet/:address/lucky-boxes` |
+| GET | `/api/wallet/:address/staking-positions` (live `claimable`) |
+| GET | `/api/wallet/:address/staking-history` |
+| GET | `/api/wallet/:address/dev-locks` (live `claimable`) |
+| GET | `/api/wallet/:address/trades` |
+| GET | `/api/wallet/:address/fee-claims` (estimates; router not deployed) |
 | GET | `/api/staking/events`, `/api/staking/events/:vaultId` |
+| GET | `/api/staking/config` |
 | GET | `/api/leaderboard/current` |
+| GET | `/api/analytics?window=24h\|all` |
+| GET | `/api/reward-table` (auto-seeds default sealed table) |
 | GET | `/api/charts/:token?period=1h` |
 | GET | `/api/metadata/:token` |
 | POST | `/api/launch/prepare\|confirm` |
 | POST | `/api/staking/events/prepare\|confirm` |
+| POST | `/api/staking/stake/prepare\|confirm` |
+| POST | `/api/staking/unstake/prepare\|confirm` |
+| POST | `/api/staking/claim/prepare\|confirm` |
 | POST | `/api/devlock/prepare\|confirm` |
+| POST | `/api/devlock/claim/prepare\|confirm` |
+| POST | `/api/lucky-boxes/:boxId/open` |
+| POST | `/api/lucky-boxes/:boxId/claim` |
+| POST | `/api/fees/claim/prepare` → `503 FEE_ROUTER_NOT_DEPLOYED` |
 | POST | `/api/swap/quote`, `/api/swap/prepare` |
 | POST | `/api/admin/season`, `/reward-table`, `/launch/:token/pause-rewards`, `/token/approve` |
 
 Admin routes require `Authorization: Bearer $ADMIN_API_TOKEN`.
 
+Stake prepare may also return `approveTx` when ERC-20 allowance is insufficient.
+
 ## Indexer
 
 Polls the Phantom HTTP RPC, decodes LOOTING contract events into Postgres, and
-stores a checkpoint for reorg rollback. Trade / BUY qualification indexing is
-gated by `ENABLE_TRADE_INDEXING=false` until Pons ABIs are verified.
-
-## Response shape
-
-List/detail JSON for launches, staking, wallet, leaderboard, and lucky boxes matches the
-frontend mock UI types in `apps/web` (`Launch`, `StakingEvent`, `StakingPosition`, `DevLock`,
-leaderboard rows, `LuckyBox`). Amounts are UI numbers (`raw / 1e18`). Launch detail includes a
-`stats` object (`age`, `txns`, `volume24h`, `traders`, `change6h`, `change24h`, `ath`, `boxUsd`).
-`GET /api/fees` returns the FE fee constants (`DEV_LOCK_FEE_ETH`, `CREATE_STAKING_FEE_ETH`, …).
+stores a checkpoint for reorg rollback. Writes `staking_activities` on
+Stake / Unstake / Claim. Trade / BUY qualification indexing is gated by
+`ENABLE_TRADE_INDEXING=false` until Pons ABIs are verified.
 
 ## Known limits
 
@@ -103,7 +110,8 @@ leaderboard rows, `LuckyBox`). Amounts are UI numbers (`raw / 1e18`). Launch det
 - Uniswap prepare uses the V3 SwapRouter02 path; V4 Universal Router encoding is deferred.
 - Keeper buyback route builder for `FeeSplitter.buyback` waits on the LOOTING token + adapter.
 - Redis is deferred until Railway; caches are in-process TTL maps.
-- Staking `claimable` and leaderboard `rewards` USD are placeholders (`0` / `$0`) until on-chain
-  accrual and USD reward totals are indexed.
-- Frontend is still mock-only; wire `NEXT_PUBLIC_API_URL` when ready.
-# looting-backend
+- Leaderboard `rewards` USD is still `$0` until reward USD totals are indexed.
+- Holders are derived from indexed trade flows, not ERC-20 balance snapshots.
+- Lucky Box open is DB + sealed-table hash (no `LootingLuckyBox` contract yet); claim does not move tokens.
+- Creator/holder trading-fee claims wait on `LootingRewardRouter`.
+- Frontend still uses mocks; wire `NEXT_PUBLIC_API_URL` when ready.

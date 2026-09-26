@@ -79,8 +79,13 @@ enum Tier {
 enum PendingActionKind {
   launch
   staking_create
+  staking_stake
+  staking_unstake
+  staking_claim
   devlock_create
+  devlock_claim
   swap
+  lucky_box_open
 }
 
 model UserWallet {
@@ -337,6 +342,25 @@ model StakingPosition {
   @@unique([vaultId, walletAddress, lockId])
   @@index([walletAddress])
   @@map("staking_positions")
+}
+
+model StakingActivity {
+  id            String   @id @default(cuid())
+  chainId       Int
+  vaultId       String
+  vaultDbId     String?
+  walletAddress String
+  kind          String
+  lockId        Int
+  amount        Decimal  @default(0) @db.Decimal(78, 0)
+  reward        Decimal  @default(0) @db.Decimal(78, 0)
+  txHash        String?
+  at            DateTime @default(now())
+  createdAt     DateTime @default(now())
+
+  @@index([walletAddress, at])
+  @@index([vaultId, at])
+  @@map("staking_activities")
 }
 
 model DevLock {

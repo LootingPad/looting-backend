@@ -3,11 +3,16 @@ import { env } from "../config/env.js";
 import { prisma } from "../db/prisma.js";
 import {
   toFeDevLock,
+  toFeLaunch,
   toFeLuckyBox,
   toFeStakingPosition,
   toFeWallet,
+  toFeWalletTrade,
+  lockIdToFe,
+  rawToUiAmount,
 } from "../lib/fe-shape.js";
-import { normalizeAddress } from "../lib/utils.js";
+import { readDevLockClaimable, readPendingRewards } from "../lib/actions.js";
+import { normalizeAddress, xpForQualifiedTrade } from "../lib/utils.js";
 import { getCurrentSeason } from "../services/xp.js";
 
 export async function registerWalletRoutes(app: FastifyInstance) {
@@ -137,14 +142,78 @@ export async function registerWalletRoutes(app: FastifyInstance) {
       orderBy: { updatedAt: "desc" },
     });
 
-    return {
-      data: positions.map((p) =>
-        toFeStakingPosition(p, p.vault, {
+    const data = await Promise.all(
+      positions.map(async (p) => {
+        const claimable = await readPendingRewards(p.vault.vaultAddress, wallet, p.lockId);
+        return toFeStakingPosition(p, p.vault, {
           name: p.vault.launch?.name,
           symbol: p.vault.launch?.symbol,
-          claimable: 0,
-        }),
-      ),
+          claimable,
+        });
+      }),
+    );
+
+    return { data };
+  });
+
+  app.get("/api/wallet/:address/staking-history", async (req, reply) => {
+    const { address } = req.params as { address: string };
+    const q = req.query as { limit?: string; offset?: string };
+    const limit = Math.min(Number(q.limit ?? 50), 100);
+    const offset = Number(q.offset ?? 0);
+
+    let wallet: string;
+    try {
+      wallet = normalizeAddress(address);
+    } catch {
+      return reply.code(400).send({ error: "INVALID_ADDRESS" });
+    }
+
+    const rows = await prisma.stakingActivity.findMany({
+      where: { chainId: env.CHAIN_ID, walletAddress: wallet },
+      orderBy: { at: "desc" },
+      take: limit,
+      skip: offset,
+    });
+
+    const vaultIds = [...new Set(rows.map((r) => r.vaultId))];
+    const numericIds = vaultIds.filter((id) => /^\d+$/.test(id)).map((id) => BigInt(id));
+    const addressIds = vaultIds.map((id) => id.toLowerCase());
+    const vaults =
+      vaultIds.length === 0
+        ? []
+        : await prisma.stakingVault.findMany({
+            where: {
+              chainId: env.CHAIN_ID,
+              OR: [
+                ...(numericIds.length ? [{ vaultId: { in: numericIds } }] : []),
+                ...(addressIds.length ? [{ vaultAddress: { in: addressIds } }] : []),
+              ],
+            },
+            include: { launch: true },
+          });
+    const byVaultId = new Map(vaults.map((v) => [v.vaultId.toString(), v]));
+    const byAddress = new Map(vaults.map((v) => [v.vaultAddress, v]));
+
+    return {
+      data: rows.map((r) => {
+        const vault = byVaultId.get(r.vaultId) ?? byAddress.get(r.vaultId.toLowerCase());
+        return {
+          id: r.id,
+          eventId: vault?.vaultId.toString() ?? r.vaultId,
+          address: vault?.stakeToken ?? "",
+          symbol: vault?.launch?.symbol ?? "",
+          name: vault?.launch?.name ?? "",
+          kind: r.kind as "stake" | "claim" | "unstake",
+          lock: lockIdToFe(r.lockId),
+          amount: rawToUiAmount(r.amount),
+          reward: rawToUiAmount(r.reward),
+          at: r.at.getTime(),
+          txHash: r.txHash,
+        };
+      }),
+      limit,
+      offset,
     };
   });
 
@@ -163,13 +232,64 @@ export async function registerWalletRoutes(app: FastifyInstance) {
       orderBy: { createdAt: "desc" },
     });
 
-    return {
-      data: locks.map((l) =>
-        toFeDevLock(l, {
+    const data = await Promise.all(
+      locks.map(async (l) => {
+        const shaped = toFeDevLock(l, {
           name: l.launch?.name,
           symbol: l.launch?.symbol,
-        }),
-      ),
+        });
+        const claimable = await readDevLockClaimable(l.lockId);
+        return { ...shaped, claimable };
+      }),
+    );
+
+    return { data };
+  });
+
+  app.get("/api/wallet/:address/trades", async (req, reply) => {
+    const { address } = req.params as { address: string };
+    const q = req.query as { limit?: string; offset?: string };
+    const limit = Math.min(Number(q.limit ?? 50), 100);
+    const offset = Number(q.offset ?? 0);
+
+    let wallet: string;
+    try {
+      wallet = normalizeAddress(address);
+    } catch {
+      return reply.code(400).send({ error: "INVALID_ADDRESS" });
+    }
+
+    const trades = await prisma.trade.findMany({
+      where: {
+        trader: wallet,
+        chainId: env.CHAIN_ID,
+        confirmationState: { in: ["CONFIRMED", "FINALIZED", "PENDING"] },
+      },
+      include: { launch: true },
+      orderBy: [{ timestamp: "desc" }, { logIndex: "desc" }],
+      take: limit,
+      skip: offset,
+    });
+
+    return {
+      data: trades.map((t) => {
+        const usd = t.usdNotional == null ? 0 : Number(String(t.usdNotional));
+        const launch = t.launch
+          ? toFeLaunch(t.launch)
+          : toFeLaunch({
+              token: t.token,
+              creator: "",
+              phase: "curve",
+              luckyBoxBps: 0,
+              totalCreatorFeeBps: 0,
+              name: null,
+              symbol: null,
+              description: null,
+            });
+        return toFeWalletTrade(t, launch, xpForQualifiedTrade(usd));
+      }),
+      limit,
+      offset,
     };
   });
 }

@@ -5,7 +5,17 @@ export const FE_FEES = {
   CREATE_STAKING_FEE_ETH: 0.003,
   CREATOR_FEE_SHARE: 0.8,
   PROTOCOL_BURN_SHARE: 0.2,
+  /** Display FX for ETH↔USD in Analytics / Shell until an oracle is wired. */
+  ETH_USD: 3500,
+  LOOTING_PRICE_USD: 0.0024,
 } as const;
+
+/** APR display options for staking UI (Create Staking / Analytics). */
+export const FE_STAKING_LOCK_OPTIONS = [
+  { id: "flex" as const, label: "Flexible", rate: 8 },
+  { id: "30" as const, label: "30 days", rate: 14 },
+  { id: "90" as const, label: "90 days", rate: 22 },
+];
 
 const UI_DECIMALS = 18n;
 const UI_SCALE = 10n ** UI_DECIMALS;
@@ -113,6 +123,53 @@ export type FeWallet = FeLeaderboardRow & {
   seasonId: string | null;
 };
 
+export type FeTradeSide = "Buy" | "Sell";
+
+/** Terminal trade tape row. */
+export type FeTokenTrade = {
+  id: string;
+  side: FeTradeSide;
+  address: string;
+  amount: number;
+  eth: number;
+  time: string;
+  timestamp: string;
+  usd?: number;
+  txHash?: string;
+};
+
+/** Account trade history row (includes launch card fields). */
+export type FeWalletTrade = {
+  id: string;
+  side: FeTradeSide;
+  amount: number;
+  eth: number;
+  xp: number;
+  time: string;
+  timestamp: string;
+  launch: FeLaunch;
+  txHash?: string;
+};
+
+/** Terminal holders table row. */
+export type FeHolder = {
+  rank: number;
+  address: string;
+  amount: number;
+  share: number;
+  entry: number;
+};
+
+export function toFeHolder(row: FeHolder): FeHolder {
+  return {
+    rank: row.rank,
+    address: row.address,
+    amount: row.amount,
+    share: Number(row.share.toFixed(4)),
+    entry: row.entry,
+  };
+}
+
 export type MarketEnrichment = {
   priceUsd?: number;
   marketCap?: number;
@@ -179,6 +236,83 @@ function formatAge(from: Date | null | undefined, now = Date.now()): string {
   const hours = Math.floor(minutes / 60);
   if (hours < 48) return `${hours}h`;
   return `${Math.floor(hours / 24)}d`;
+}
+
+/** Relative age string for trade timestamps (matches FE mock `2m` / `3h` / `1d`). */
+export function formatRelativeTime(from: Date, now = Date.now()): string {
+  const ms = Math.max(0, now - from.getTime());
+  const minutes = Math.floor(ms / 60_000);
+  if (minutes < 60) return `${Math.max(1, minutes)}m`;
+  const hours = Math.floor(minutes / 60);
+  if (hours < 48) return `${hours}h`;
+  return `${Math.floor(hours / 24)}d`;
+}
+
+function directionToSide(direction: string): FeTradeSide {
+  const d = direction.toLowerCase();
+  if (d === "sell" || d === "exit" || d === "ask") return "Sell";
+  return "Buy";
+}
+
+function quoteToEth(quoteRaw: Decimalish, usdNotional: number | null | undefined): number {
+  const quoteUi = rawToUiAmount(quoteRaw);
+  if (quoteUi > 0) return quoteUi;
+  if (usdNotional != null && usdNotional > 0) return usdNotional / FE_FEES.ETH_USD;
+  return 0;
+}
+
+export function toFeTokenTrade(trade: {
+  id: string;
+  trader: string;
+  direction: string;
+  tokenAmount: Decimalish;
+  quoteAmount: Decimalish;
+  usdNotional: Decimalish | null;
+  timestamp: Date;
+  txHash: string;
+}): FeTokenTrade {
+  const usd =
+    trade.usdNotional == null ? undefined : Number(String(trade.usdNotional));
+  return {
+    id: trade.id,
+    side: directionToSide(trade.direction),
+    address: trade.trader,
+    amount: rawToUiAmount(trade.tokenAmount),
+    eth: quoteToEth(trade.quoteAmount, usd),
+    time: formatRelativeTime(trade.timestamp),
+    timestamp: trade.timestamp.toISOString(),
+    usd,
+    txHash: trade.txHash,
+  };
+}
+
+export function toFeWalletTrade(
+  trade: {
+    id: string;
+    direction: string;
+    tokenAmount: Decimalish;
+    quoteAmount: Decimalish;
+    usdNotional: Decimalish | null;
+    timestamp: Date;
+    txHash: string;
+    isQualified: boolean;
+  },
+  launch: FeLaunch,
+  xp: number,
+): FeWalletTrade {
+  const usd =
+    trade.usdNotional == null ? undefined : Number(String(trade.usdNotional));
+  return {
+    id: trade.id,
+    side: directionToSide(trade.direction),
+    amount: rawToUiAmount(trade.tokenAmount),
+    eth: quoteToEth(trade.quoteAmount, usd),
+    xp: trade.isQualified ? xp : 0,
+    time: formatRelativeTime(trade.timestamp),
+    timestamp: trade.timestamp.toISOString(),
+    launch,
+    txHash: trade.txHash,
+  };
 }
 
 function formatRewardsUsd(usd: number): string {
@@ -382,6 +516,7 @@ export function toFeLuckyBox(
       token: string | null;
       swapTxHash: string | null;
       status: string;
+      rewardType?: string;
     }>;
   },
   tokenSymbol: string,
@@ -396,6 +531,13 @@ export function toFeLuckyBox(
     const amt = rawToUiAmount(claimedReward.amount);
     const sym = claimedReward.token ? claimedReward.token.slice(0, 6) : tokenSymbol;
     out.reward = `${amt} ${sym}`;
+  } else if (
+    claimedReward?.rewardType &&
+    claimedReward.rewardType !== "none" &&
+    claimedReward.rewardType !== "table" &&
+    claimedReward.rewardType !== "pending"
+  ) {
+    out.reward = claimedReward.rewardType;
   }
   if (claimedReward?.swapTxHash) out.tx = claimedReward.swapTxHash;
   if (box.claimedAt) out.claimedAt = box.claimedAt.toISOString();
