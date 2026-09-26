@@ -94,8 +94,9 @@ async function tick(): Promise<void> {
 
   if (from > safeTip) return;
 
-  // Cap batch size to avoid RPC payload limits
-  const maxSpan = 2_000n;
+  // Cap batch size — dRPC free on Robinhood rejects eth_getLogs spans > 100 blocks
+  // (error text incorrectly says 10000). Stay under that for public RPCs.
+  const maxSpan = 99n;
   const to = from + maxSpan > safeTip ? safeTip : from + maxSpan;
   await processRange(from, to);
 }

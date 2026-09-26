@@ -35,6 +35,31 @@ Contract addresses come from `../looting-contracts/deployments/<chainId>.json`
 after deploy (`LAUNCH_REGISTRY_ADDRESS`, `DEV_LOCK_ADDRESS`, `STAKING_FACTORY_ADDRESS`).
 Until those are set, prepare endpoints return `CONTRACTS_NOT_CONFIGURED`.
 
+### Deploy two services (API + indexer)
+
+`INDEXER_ENABLED=true` does **not** start the worker by itself. The API
+(`npm start`) and indexer (`npm run start:indexer`) are separate processes.
+
+1. **API service** (already live): start command
+   `npx prisma migrate deploy && npm start` — see `railway.toml`.
+2. **Indexer service**: New → same GitHub repo → copy all Variables from API →
+   override **Start Command** to `npm run start:indexer` (no public domain).
+3. Deploy logs must show `[indexer] starting on chain 4663`.
+
+Activate a season (once):
+
+```bash
+./scripts/activate-season.sh
+# or:
+curl -X POST https://<api>/api/admin/season \
+  -H "Authorization: Bearer $ADMIN_API_TOKEN" \
+  -H 'content-type: application/json' \
+  -d '{"seasonId":"s1","startsAt":"2026-09-26T00:00:00Z","endsAt":"2026-12-25T00:00:00Z","activate":true}'
+```
+
+Production `ADMIN_API_TOKEN` must match the Railway variable (local
+`dev-admin-token` will get `403`).
+
 ## API surface (Spec §22)
 
 | Method | Path |
