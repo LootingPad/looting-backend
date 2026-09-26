@@ -77,6 +77,8 @@ Activate a season (once):
 | GET | `/api/staking/config` |
 | GET | `/api/leaderboard/current` |
 | GET | `/api/analytics?window=24h\|all` |
+| GET | `/api/feed/devlocks?since=&limit=` (telegram / poller feed) |
+| GET | `/api/feed/staking-activities?since=&kind=&limit=` |
 | GET | `/api/reward-table` (auto-seeds default sealed table) |
 | GET | `/api/charts/:token?period=1h` |
 | GET | `/api/metadata/:token` |

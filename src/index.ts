@@ -2,6 +2,10 @@ import cors from "@fastify/cors";
 import Fastify from "fastify";
 import { env } from "./config/env.js";
 import { prisma } from "./db/prisma.js";
+import {
+  startPonsapiLiveFeed,
+  stopPonsapiLiveFeed,
+} from "./pons-adapter/live-feed.js";
 import { registerAdminRoutes } from "./modules/admin.js";
 import { registerAnalyticsRoutes } from "./modules/analytics.js";
 import { registerChartRoutes, registerMetadataRoutes } from "./modules/charts.js";
@@ -11,6 +15,7 @@ import {
 } from "./modules/config-public.js";
 import { registerFeeClaimRoutes } from "./modules/fee-claims.js";
 import { registerFeeRoutes } from "./modules/fees.js";
+import { registerFeedRoutes } from "./modules/feed.js";
 import { registerHealthRoutes } from "./modules/health.js";
 import { registerLaunchRoutes } from "./modules/launches.js";
 import { registerLeaderboardRoutes } from "./modules/leaderboard.js";
@@ -48,6 +53,7 @@ async function main() {
   await registerLuckyBoxRoutes(app);
   await registerRewardTableRoutes(app);
   await registerAnalyticsRoutes(app);
+  await registerFeedRoutes(app);
   await registerChartRoutes(app);
   await registerMetadataRoutes(app);
   await registerPrepareRoutes(app);
@@ -66,6 +72,7 @@ async function main() {
   });
 
   const shutdown = async () => {
+    stopPonsapiLiveFeed();
     await app.close();
     await prisma.$disconnect();
     process.exit(0);
@@ -75,6 +82,7 @@ async function main() {
 
   await app.listen({ port: env.PORT, host: "0.0.0.0" });
   app.log.info(`LOOTING API listening on :${env.PORT} (chain ${env.CHAIN_ID})`);
+  startPonsapiLiveFeed(app.log);
 }
 
 main().catch(async (err) => {
