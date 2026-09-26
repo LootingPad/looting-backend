@@ -1,6 +1,8 @@
 import type { FastifyInstance } from "fastify";
+import { getTokenMarketSnapshot } from "../clients/mobula.js";
 import { env } from "../config/env.js";
 import { prisma } from "../db/prisma.js";
+import { toFeStakingEvent } from "../lib/fe-shape.js";
 
 export async function registerStakingRoutes(app: FastifyInstance) {
   app.get("/api/staking/events", async (req) => {
@@ -13,26 +15,31 @@ export async function registerStakingRoutes(app: FastifyInstance) {
         chainId: env.CHAIN_ID,
         ...(q.token ? { stakeToken: q.token.trim().toLowerCase() } : {}),
       },
+      include: { launch: true },
       orderBy: { createdAt: "desc" },
       take: limit,
       skip: offset,
     });
 
+    const uniqueTokens = [...new Set(vaults.map((v) => v.stakeToken))];
+    const marketByToken = new Map<string, { marketCap?: number; volume24h?: number }>();
+    await Promise.all(
+      uniqueTokens.map(async (token) => {
+        const snap = await getTokenMarketSnapshot(token);
+        if (snap) marketByToken.set(token, snap);
+      }),
+    );
+
     return {
-      data: vaults.map((v) => ({
-        vaultId: v.vaultId.toString(),
-        vaultAddress: v.vaultAddress,
-        stakeToken: v.stakeToken,
-        creator: v.creator,
-        rewardFunded: v.rewardFunded.toString(),
-        rewardRemaining: v.rewardRemaining.toString(),
-        totalStaked: v.totalStaked.toString(),
-        stakerCount: v.stakerCount,
-        endsAt: v.endsAt.toISOString(),
-        lockMask: v.lockMask,
-        aprBps: [v.aprFlexBps, v.apr30Bps, v.apr90Bps],
-        status: v.status,
-      })),
+      data: vaults.map((v) => {
+        const market = marketByToken.get(v.stakeToken);
+        return toFeStakingEvent(v, {
+          name: v.launch?.name,
+          symbol: v.launch?.symbol,
+          marketCap: market?.marketCap,
+          volume24h: market?.volume24h,
+        });
+      }),
       limit,
       offset,
     };
@@ -45,25 +52,18 @@ export async function registerStakingRoutes(app: FastifyInstance) {
         chainId: env.CHAIN_ID,
         OR: [{ vaultId: BigInt(vaultId) }, { vaultAddress: vaultId.toLowerCase() }],
       },
+      include: { launch: true },
     });
     if (!vault) return reply.code(404).send({ error: "NOT_FOUND" });
 
+    const market = await getTokenMarketSnapshot(vault.stakeToken);
     return {
-      data: {
-        vaultId: vault.vaultId.toString(),
-        vaultAddress: vault.vaultAddress,
-        stakeToken: vault.stakeToken,
-        creator: vault.creator,
-        rewardFunded: vault.rewardFunded.toString(),
-        rewardRemaining: vault.rewardRemaining.toString(),
-        totalStaked: vault.totalStaked.toString(),
-        stakerCount: vault.stakerCount,
-        endsAt: vault.endsAt.toISOString(),
-        lockMask: vault.lockMask,
-        aprBps: [vault.aprFlexBps, vault.apr30Bps, vault.apr90Bps],
-        status: vault.status,
-        createTxHash: vault.createTxHash,
-      },
+      data: toFeStakingEvent(vault, {
+        name: vault.launch?.name,
+        symbol: vault.launch?.symbol,
+        marketCap: market?.marketCap,
+        volume24h: market?.volume24h,
+      }),
     };
   });
 }

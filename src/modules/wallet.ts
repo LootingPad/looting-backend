@@ -1,6 +1,12 @@
 import type { FastifyInstance } from "fastify";
 import { env } from "../config/env.js";
 import { prisma } from "../db/prisma.js";
+import {
+  toFeDevLock,
+  toFeLuckyBox,
+  toFeStakingPosition,
+  toFeWallet,
+} from "../lib/fe-shape.js";
 import { normalizeAddress } from "../lib/utils.js";
 import { getCurrentSeason } from "../services/xp.js";
 
@@ -19,8 +25,9 @@ export async function registerWalletRoutes(app: FastifyInstance) {
     });
     const season = await getCurrentSeason();
     let seasonXp = 0n;
-    let tier: string = "bronze";
+    let tier = "bronze";
     let rank: number | null = null;
+    let tradeCount = 0;
 
     if (user && season) {
       const stats = await prisma.seasonWalletStat.findUnique({
@@ -30,6 +37,7 @@ export async function registerWalletRoutes(app: FastifyInstance) {
         seasonXp = stats.xp;
         tier = stats.tier;
         rank = stats.rank;
+        tradeCount = stats.tradeCount;
       }
     }
 
@@ -40,17 +48,18 @@ export async function registerWalletRoutes(app: FastifyInstance) {
       : 0;
 
     return {
-      data: {
+      data: toFeWallet({
         wallet,
-        seasonXp: seasonXp.toString(),
         tier,
-        rank,
-        luckyBoxesAvailable: boxesAvailable,
-        lifetimeXp: (user?.lifetimeXp ?? 0n).toString(),
+        seasonXp,
+        tradeCount: tradeCount || (user?.lifetimeTradeCount ?? 0),
+        lifetimeXp: user?.lifetimeXp ?? 0n,
         lifetimeTradeCount: user?.lifetimeTradeCount ?? 0,
         lifetimeBoxCount: user?.lifetimeBoxCount ?? 0,
+        luckyBoxesAvailable: boxesAvailable,
+        rank,
         seasonId: season?.seasonId ?? null,
-      },
+      }),
     };
   });
 
@@ -103,19 +112,13 @@ export async function registerWalletRoutes(app: FastifyInstance) {
 
     const boxes = await prisma.luckyBox.findMany({
       where: { walletId: user.id },
+      include: { launch: true, rewards: true },
       orderBy: { createdAt: "desc" },
       take: 100,
     });
 
     return {
-      data: boxes.map((b) => ({
-        boxId: b.boxId,
-        status: b.status,
-        tier: b.tier,
-        openedAt: b.openedAt?.toISOString() ?? null,
-        claimedAt: b.claimedAt?.toISOString() ?? null,
-        createdAt: b.createdAt.toISOString(),
-      })),
+      data: boxes.map((b) => toFeLuckyBox(b, b.launch?.symbol ?? "")),
     };
   });
 
@@ -130,21 +133,18 @@ export async function registerWalletRoutes(app: FastifyInstance) {
 
     const positions = await prisma.stakingPosition.findMany({
       where: { walletAddress: wallet },
-      include: { vault: true },
+      include: { vault: { include: { launch: true } } },
       orderBy: { updatedAt: "desc" },
     });
 
     return {
-      data: positions.map((p) => ({
-        vaultId: p.vault.vaultId.toString(),
-        vaultAddress: p.vault.vaultAddress,
-        stakeToken: p.vault.stakeToken,
-        lockId: p.lockId,
-        amount: p.amount.toString(),
-        rewardsClaimed: p.rewardsClaimed.toString(),
-        lockStartedAt: p.lockStartedAt?.toISOString() ?? null,
-        lockEndsAt: p.lockEndsAt?.toISOString() ?? null,
-      })),
+      data: positions.map((p) =>
+        toFeStakingPosition(p, p.vault, {
+          name: p.vault.launch?.name,
+          symbol: p.vault.launch?.symbol,
+          claimable: 0,
+        }),
+      ),
     };
   });
 
@@ -159,22 +159,17 @@ export async function registerWalletRoutes(app: FastifyInstance) {
 
     const locks = await prisma.devLock.findMany({
       where: { chainId: env.CHAIN_ID, owner: wallet },
+      include: { launch: true },
       orderBy: { createdAt: "desc" },
     });
 
     return {
-      data: locks.map((l) => ({
-        lockId: l.lockId.toString(),
-        token: l.token,
-        mode: l.mode,
-        amount: l.amount.toString(),
-        claimed: l.claimed.toString(),
-        startAt: l.startAt.toISOString(),
-        cliffAt: l.cliffAt.toISOString(),
-        unlockAt: l.unlockAt.toISOString(),
-        cadence: l.cadence,
-        status: l.status,
-      })),
+      data: locks.map((l) =>
+        toFeDevLock(l, {
+          name: l.launch?.name,
+          symbol: l.launch?.symbol,
+        }),
+      ),
     };
   });
 }

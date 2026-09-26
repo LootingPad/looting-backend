@@ -1,5 +1,6 @@
 import type { FastifyInstance } from "fastify";
 import { prisma } from "../db/prisma.js";
+import { toFeLeaderboardRow } from "../lib/fe-shape.js";
 import { getCurrentSeason } from "../services/xp.js";
 
 export async function registerLeaderboardRoutes(app: FastifyInstance) {
@@ -29,26 +30,25 @@ export async function registerLeaderboardRoutes(app: FastifyInstance) {
         include: { wallet: true },
       });
       if (me) {
-        you = {
-          rank: me.rank,
+        you = toFeLeaderboardRow({
           wallet: me.wallet.wallet,
-          xp: me.xp.toString(),
+          xp: me.xp,
           tier: me.tier,
           tradeCount: me.tradeCount,
-        };
+        });
       }
     }
 
     return {
       seasonId: season.seasonId,
-      data: rows.map((r) => ({
-        rank: r.rank,
-        wallet: r.wallet.wallet,
-        xp: r.xp.toString(),
-        tier: r.tier,
-        tradeCount: r.tradeCount,
-        boxesEarned: r.boxesEarned,
-      })),
+      data: rows.map((r) =>
+        toFeLeaderboardRow({
+          wallet: r.wallet.wallet,
+          xp: r.xp,
+          tier: r.tier,
+          tradeCount: r.tradeCount,
+        }),
+      ),
       you,
       limit,
       offset,

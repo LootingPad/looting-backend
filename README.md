@@ -40,6 +40,7 @@ Until those are set, prepare endpoints return `CONTRACTS_NOT_CONFIGURED`.
 | Method | Path |
 |---|---|
 | GET | `/health` |
+| GET | `/api/fees` |
 | GET | `/api/launches`, `/api/launches/:token` |
 | GET | `/api/creator/:address/launches` |
 | GET | `/api/launch/:token/rewards` |
@@ -63,10 +64,20 @@ Polls the Phantom HTTP RPC, decodes LOOTING contract events into Postgres, and
 stores a checkpoint for reorg rollback. Trade / BUY qualification indexing is
 gated by `ENABLE_TRADE_INDEXING=false` until Pons ABIs are verified.
 
+## Response shape
+
+List/detail JSON for launches, staking, wallet, leaderboard, and lucky boxes matches the
+frontend mock UI types in `apps/web` (`Launch`, `StakingEvent`, `StakingPosition`, `DevLock`,
+leaderboard rows, `LuckyBox`). Amounts are UI numbers (`raw / 1e18`). Launch detail includes a
+`stats` object (`age`, `txns`, `volume24h`, `traders`, `change6h`, `change24h`, `ath`, `boxUsd`).
+`GET /api/fees` returns the FE fee constants (`DEV_LOCK_FEE_ETH`, `CREATE_STAKING_FEE_ETH`, …).
+
 ## Known limits
 
 - DEX Screener is not integrated (Mobula covers charts + metadata).
 - Uniswap prepare uses the V3 SwapRouter02 path; V4 Universal Router encoding is deferred.
 - Keeper buyback route builder for `FeeSplitter.buyback` waits on the LOOTING token + adapter.
 - Redis is deferred until Railway; caches are in-process TTL maps.
+- Staking `claimable` and leaderboard `rewards` USD are placeholders (`0` / `$0`) until on-chain
+  accrual and USD reward totals are indexed.
 - Frontend is still mock-only; wire `NEXT_PUBLIC_API_URL` when ready.

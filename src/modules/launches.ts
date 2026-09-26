@@ -2,49 +2,8 @@ import type { FastifyInstance } from "fastify";
 import { getTokenMarketSnapshot } from "../clients/mobula.js";
 import { env } from "../config/env.js";
 import { prisma } from "../db/prisma.js";
+import { toFeLaunch, toFeMarketStats } from "../lib/fe-shape.js";
 import { normalizeAddress } from "../lib/utils.js";
-
-function serializeLaunch(launch: {
-  token: string;
-  creator: string;
-  curve: string | null;
-  pair: string | null;
-  phase: string;
-  status: string;
-  rewardsEnabled: boolean;
-  creatorBps: number;
-  luckyBoxBps: number;
-  totalCreatorFeeBps: number;
-  holderShareEnabled: boolean;
-  quoteAsset: string | null;
-  launchedAt: Date | null;
-  name: string | null;
-  symbol: string | null;
-  imageUrl: string | null;
-  description: string | null;
-  configHash: string | null;
-}) {
-  return {
-    token: launch.token,
-    creator: launch.creator,
-    curve: launch.curve,
-    pair: launch.pair,
-    phase: launch.phase,
-    status: launch.status,
-    rewardsEnabled: launch.rewardsEnabled,
-    creatorBps: launch.creatorBps,
-    luckyBoxBps: launch.luckyBoxBps,
-    totalCreatorFeeBps: launch.totalCreatorFeeBps,
-    holderShareEnabled: launch.holderShareEnabled,
-    quoteAsset: launch.quoteAsset,
-    launchedAt: launch.launchedAt?.toISOString() ?? null,
-    name: launch.name,
-    symbol: launch.symbol,
-    imageUrl: launch.imageUrl,
-    description: launch.description,
-    configHash: launch.configHash,
-  };
-}
 
 export async function registerLaunchRoutes(app: FastifyInstance) {
   app.get("/api/launches", async (req) => {
@@ -62,7 +21,7 @@ export async function registerLaunchRoutes(app: FastifyInstance) {
       skip: offset,
     });
 
-    return { data: launches.map(serializeLaunch), limit, offset };
+    return { data: launches.map((l) => toFeLaunch(l)), limit, offset };
   });
 
   app.get("/api/launches/:token", async (req, reply) => {
@@ -79,8 +38,32 @@ export async function registerLaunchRoutes(app: FastifyInstance) {
     });
     if (!launch) return reply.code(404).send({ error: "NOT_FOUND" });
 
-    const market = await getTokenMarketSnapshot(normalized);
-    return { data: { ...serializeLaunch(launch), market } };
+    const since24h = new Date(Date.now() - 24 * 60 * 60 * 1000);
+    const [market, txns, tradersRows, volumeAgg] = await Promise.all([
+      getTokenMarketSnapshot(normalized),
+      prisma.trade.count({ where: { launchId: launch.id } }),
+      prisma.trade.findMany({
+        where: { launchId: launch.id },
+        distinct: ["trader"],
+        select: { trader: true },
+      }),
+      prisma.trade.aggregate({
+        where: { launchId: launch.id, timestamp: { gte: since24h } },
+        _sum: { usdNotional: true },
+      }),
+    ]);
+
+    const shaped = toFeLaunch(launch, market);
+    const volumeFromTrades = Number(volumeAgg._sum.usdNotional ?? 0);
+    const stats = toFeMarketStats(shaped, {
+      launchedAt: launch.launchedAt,
+      txns,
+      traders: tradersRows.length,
+      volume24h: market?.volume24h ?? volumeFromTrades,
+      ath: market?.marketCap ?? shaped.marketCap,
+    });
+
+    return { data: { ...shaped, stats } };
   });
 
   app.get("/api/creator/:address/launches", async (req, reply) => {
@@ -96,7 +79,7 @@ export async function registerLaunchRoutes(app: FastifyInstance) {
       where: { chainId: env.CHAIN_ID, creator },
       orderBy: { launchedAt: "desc" },
     });
-    return { data: launches.map(serializeLaunch) };
+    return { data: launches.map((l) => toFeLaunch(l)) };
   });
 
   app.get("/api/launch/:token/rewards", async (req, reply) => {

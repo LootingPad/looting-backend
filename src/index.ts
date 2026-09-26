@@ -4,6 +4,7 @@ import { env } from "./config/env.js";
 import { prisma } from "./db/prisma.js";
 import { registerAdminRoutes } from "./modules/admin.js";
 import { registerChartRoutes, registerMetadataRoutes } from "./modules/charts.js";
+import { registerFeeRoutes } from "./modules/fees.js";
 import { registerHealthRoutes } from "./modules/health.js";
 import { registerLaunchRoutes } from "./modules/launches.js";
 import { registerLeaderboardRoutes } from "./modules/leaderboard.js";
@@ -23,6 +24,7 @@ async function main() {
   });
 
   await registerHealthRoutes(app);
+  await registerFeeRoutes(app);
   await registerLaunchRoutes(app);
   await registerWalletRoutes(app);
   await registerSeasonRoutes(app);
