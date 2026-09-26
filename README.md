@@ -81,3 +81,4 @@ leaderboard rows, `LuckyBox`). Amounts are UI numbers (`raw / 1e18`). Launch det
 - Staking `claimable` and leaderboard `rewards` USD are placeholders (`0` / `$0`) until on-chain
   accrual and USD reward totals are indexed.
 - Frontend is still mock-only; wire `NEXT_PUBLIC_API_URL` when ready.
+# looting-backend
