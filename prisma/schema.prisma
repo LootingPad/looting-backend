@@ -1,0 +1,404 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum SeasonStatus {
+  upcoming
+  active
+  ended
+}
+
+enum LaunchPhase {
+  curve
+  graduated
+}
+
+enum LaunchStatus {
+  active
+  paused
+  archived
+}
+
+enum ConfirmationState {
+  PENDING
+  CONFIRMED
+  FINALIZED
+  REORGED
+  REVERSED
+}
+
+enum LuckyBoxStatus {
+  unclaimed
+  in_market
+  claimed
+  not_eligible
+  exited
+}
+
+enum RewardStatus {
+  pending
+  swapping
+  claimed
+  failed
+}
+
+enum VaultStatus {
+  active
+  ended
+  paused
+}
+
+enum DevLockMode {
+  time
+  vest
+}
+
+enum DevLockCadence {
+  day
+  week
+  month
+}
+
+enum DevLockStatus {
+  active
+  claimed
+  closed
+}
+
+enum Tier {
+  bronze
+  silver
+  gold
+}
+
+enum PendingActionKind {
+  launch
+  staking_create
+  devlock_create
+  swap
+}
+
+model UserWallet {
+  id                String   @id @default(cuid())
+  chainId           Int
+  wallet            String
+  firstSeenAt       DateTime @default(now())
+  lastSeenAt        DateTime @default(now())
+  lifetimeXp        BigInt   @default(0)
+  lifetimeTradeCount Int     @default(0)
+  lifetimeBoxCount  Int      @default(0)
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @updatedAt
+
+  seasonStats       SeasonWalletStat[]
+  luckyBoxes        LuckyBox[]
+  rewards           Reward[]
+  stakingPositions  StakingPosition[]
+  trades            Trade[]
+
+  @@unique([chainId, wallet])
+  @@index([wallet])
+  @@map("users_wallets")
+}
+
+model Season {
+  id               String       @id @default(cuid())
+  seasonId         String       @unique
+  startsAt         DateTime
+  endsAt           DateTime
+  status           SeasonStatus @default(upcoming)
+  configHash       String
+  bronzeThreshold  Int          @default(0)
+  silverThreshold  Int          @default(1000)
+  goldThreshold    Int          @default(5000)
+  createdAt        DateTime     @default(now())
+  updatedAt        DateTime     @updatedAt
+
+  walletStats      SeasonWalletStat[]
+  luckyBoxes       LuckyBox[]
+
+  @@map("seasons")
+}
+
+model SeasonWalletStat {
+  id              String   @id @default(cuid())
+  seasonId        String
+  walletId        String
+  xp              BigInt   @default(0)
+  tradeCount      Int      @default(0)
+  boxesEarned     Int      @default(0)
+  boxesOpened     Int      @default(0)
+  tier            Tier     @default(bronze)
+  rank            Int?
+  updatedAt       DateTime @updatedAt
+
+  season          Season     @relation(fields: [seasonId], references: [id], onDelete: Cascade)
+  wallet          UserWallet @relation(fields: [walletId], references: [id], onDelete: Cascade)
+
+  @@unique([seasonId, walletId])
+  @@index([seasonId, rank])
+  @@index([seasonId, xp])
+  @@map("season_wallet_stats")
+}
+
+model Launch {
+  id                 String       @id @default(cuid())
+  chainId            Int
+  token              String
+  curve              String?
+  pair               String?
+  creator            String
+  creatorFeeRouter   String?
+  creatorBps         Int          @default(0)
+  luckyBoxBps        Int          @default(0)
+  totalCreatorFeeBps Int          @default(0)
+  holderShareEnabled Boolean      @default(false)
+  quoteAsset         String?
+  launchTxHash       String?
+  launchBlock        BigInt?
+  launchedAt         DateTime?
+  phase              LaunchPhase  @default(curve)
+  status             LaunchStatus @default(active)
+  rewardsEnabled     Boolean      @default(true)
+  configHash         String?
+  name               String?
+  symbol             String?
+  imageUrl           String?
+  description        String?
+  createdAt          DateTime     @default(now())
+  updatedAt          DateTime     @updatedAt
+
+  trades             Trade[]
+  luckyBoxes         LuckyBox[]
+  rewards            Reward[]
+  treasuryLedger     RewardTreasuryLedger[]
+  stakingVaults      StakingVault[]
+  devLocks           DevLock[]
+
+  @@unique([chainId, token])
+  @@index([creator])
+  @@index([status, phase])
+  @@map("launches")
+}
+
+model Trade {
+  id                   String            @id @default(cuid())
+  chainId              Int
+  launchId             String?
+  token                String
+  poolOrCurve          String?
+  trader               String
+  walletId             String?
+  txHash               String
+  logIndex             Int
+  blockNumber          BigInt
+  blockHash            String
+  timestamp            DateTime
+  tokenAmount          Decimal           @db.Decimal(78, 0)
+  quoteAmount          Decimal           @db.Decimal(78, 0)
+  direction            String
+  effectivePrice       Decimal?          @db.Decimal(78, 18)
+  usdNotional          Decimal?          @db.Decimal(36, 18)
+  sourceContract       String?
+  isQualified          Boolean           @default(false)
+  qualificationReason  String?
+  confirmationState    ConfirmationState @default(PENDING)
+  createdAt            DateTime          @default(now())
+  updatedAt            DateTime          @updatedAt
+
+  launch               Launch?           @relation(fields: [launchId], references: [id])
+  wallet               UserWallet?       @relation(fields: [walletId], references: [id])
+  luckyBoxes           LuckyBox[]
+
+  @@unique([txHash, logIndex])
+  @@index([token, trader])
+  @@index([confirmationState, blockNumber])
+  @@map("trades")
+}
+
+model LuckyBox {
+  id                 String         @id @default(cuid())
+  boxId              String         @unique
+  walletId           String
+  launchId           String?
+  seasonId           String?
+  tier               Tier           @default(bronze)
+  status             LuckyBoxStatus @default(unclaimed)
+  rewardConfigHash   String?
+  earnedFromTradeId  String?
+  openedAt           DateTime?
+  claimedAt          DateTime?
+  createdAt          DateTime       @default(now())
+  updatedAt          DateTime       @updatedAt
+
+  wallet             UserWallet     @relation(fields: [walletId], references: [id])
+  launch             Launch?        @relation(fields: [launchId], references: [id])
+  season             Season?        @relation(fields: [seasonId], references: [id])
+  earnedFromTrade    Trade?         @relation(fields: [earnedFromTradeId], references: [id])
+  rewards            Reward[]
+
+  @@index([walletId, status])
+  @@map("lucky_boxes")
+}
+
+model Reward {
+  id               String       @id @default(cuid())
+  walletId         String
+  launchId         String?
+  luckyBoxId       String?
+  rewardType       String
+  token            String?
+  amount           Decimal?     @db.Decimal(78, 0)
+  swapInput        Decimal?     @db.Decimal(78, 0)
+  swapOutput       Decimal?     @db.Decimal(78, 0)
+  swapTxHash       String?
+  status           RewardStatus @default(pending)
+  createdAt        DateTime     @default(now())
+  updatedAt        DateTime     @updatedAt
+
+  wallet           UserWallet   @relation(fields: [walletId], references: [id])
+  launch           Launch?      @relation(fields: [launchId], references: [id])
+  luckyBox         LuckyBox?    @relation(fields: [luckyBoxId], references: [id])
+
+  @@index([walletId, status])
+  @@map("rewards")
+}
+
+model RewardTreasuryLedger {
+  id        String   @id @default(cuid())
+  launchId  String
+  asset     String
+  amount    Decimal  @db.Decimal(78, 0)
+  direction String
+  txHash    String?
+  note      String?
+  createdAt DateTime @default(now())
+
+  launch    Launch   @relation(fields: [launchId], references: [id])
+
+  @@index([launchId])
+  @@map("reward_treasury_ledger")
+}
+
+model StakingVault {
+  id              String      @id @default(cuid())
+  chainId         Int
+  vaultId         BigInt
+  vaultAddress    String
+  stakeToken      String
+  launchId        String?
+  creator         String
+  rewardFunded    Decimal     @db.Decimal(78, 0)
+  rewardRemaining Decimal     @db.Decimal(78, 0)
+  totalStaked     Decimal     @default(0) @db.Decimal(78, 0)
+  stakerCount     Int         @default(0)
+  endsAt          DateTime
+  lockMask        Int
+  aprFlexBps      Int         @default(0)
+  apr30Bps        Int         @default(0)
+  apr90Bps        Int         @default(0)
+  createTxHash    String?
+  createBlock     BigInt?
+  feePaidWei      Decimal?    @db.Decimal(78, 0)
+  status          VaultStatus @default(active)
+  createdAt       DateTime    @default(now())
+  updatedAt       DateTime    @updatedAt
+
+  launch          Launch?     @relation(fields: [launchId], references: [id])
+  positions       StakingPosition[]
+
+  @@unique([chainId, vaultId])
+  @@unique([chainId, vaultAddress])
+  @@index([stakeToken])
+  @@index([status, endsAt])
+  @@map("staking_vaults")
+}
+
+model StakingPosition {
+  id              String     @id @default(cuid())
+  vaultId         String
+  walletId        String
+  walletAddress   String
+  lockId          Int
+  amount          Decimal    @db.Decimal(78, 0)
+  rewardsClaimed  Decimal    @default(0) @db.Decimal(78, 0)
+  lockStartedAt   DateTime?
+  lockEndsAt      DateTime?
+  updatedAt       DateTime   @updatedAt
+
+  vault           StakingVault @relation(fields: [vaultId], references: [id], onDelete: Cascade)
+  wallet          UserWallet   @relation(fields: [walletId], references: [id])
+
+  @@unique([vaultId, walletAddress, lockId])
+  @@index([walletAddress])
+  @@map("staking_positions")
+}
+
+model DevLock {
+  id          String         @id @default(cuid())
+  chainId     Int
+  lockId      BigInt
+  owner       String
+  token       String
+  launchId    String?
+  mode        DevLockMode
+  amount      Decimal        @db.Decimal(78, 0)
+  claimed     Decimal        @default(0) @db.Decimal(78, 0)
+  startAt     DateTime
+  cliffAt     DateTime
+  unlockAt    DateTime
+  cadence     DevLockCadence @default(day)
+  createTxHash String?
+  status      DevLockStatus  @default(active)
+  createdAt   DateTime       @default(now())
+  updatedAt   DateTime       @updatedAt
+
+  launch      Launch?        @relation(fields: [launchId], references: [id])
+
+  @@unique([chainId, lockId])
+  @@index([owner])
+  @@index([token])
+  @@map("dev_locks")
+}
+
+model IndexerCheckpoint {
+  id          String   @id @default(cuid())
+  name        String   @unique
+  blockNumber BigInt
+  blockHash   String
+  updatedAt   DateTime @updatedAt
+
+  @@map("indexer_checkpoints")
+}
+
+model PendingAction {
+  id          String           @id @default(cuid())
+  kind        PendingActionKind
+  wallet      String
+  payload     Json
+  txHash      String?
+  status      String           @default("prepared")
+  idempotency String?          @unique
+  createdAt   DateTime         @default(now())
+  updatedAt   DateTime         @updatedAt
+
+  @@index([wallet, kind, status])
+  @@map("pending_actions")
+}
+
+model RewardTableConfig {
+  id        String   @id @default(cuid())
+  seasonId  String?
+  name      String
+  config    Json
+  active    Boolean  @default(true)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@map("reward_table_configs")
+}
