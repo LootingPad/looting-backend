@@ -3,6 +3,7 @@ import {
   getDexExploreLaunch,
   listDexExploreLaunches,
   type ExploreStage,
+  type FeLaunchCard,
 } from "../clients/dexscreener.js";
 import { getTokenMarketSnapshot } from "../clients/mobula.js";
 import { env } from "../config/env.js";
@@ -25,6 +26,45 @@ import {
   subscribeLiveLaunches,
 } from "../pons-adapter/live-feed.js";
 
+/** Fill missing price/mcap/volume from DexScreener; keep better activity counts. */
+function mergeLaunchMarket(primary: FeLaunchCard, market: FeLaunchCard): FeLaunchCard {
+  const priceUsd = (primary.priceUsd ?? 0) > 0 ? primary.priceUsd : market.priceUsd;
+  const marketCap = (primary.marketCap ?? 0) > 0 ? primary.marketCap : market.marketCap;
+
+  return {
+    ...primary,
+    marketCap,
+    priceUsd,
+    change1h:
+      (primary.change1h ?? 0) !== 0 ? primary.change1h : (market.change1h ?? primary.change1h),
+    progress: Math.max(primary.progress ?? 0, market.progress ?? 0),
+    phase: primary.phase === "graduated" || market.phase === "graduated" ? "graduated" : primary.phase,
+    logoUrl: primary.logoUrl || market.logoUrl,
+    sparkline:
+      market.sparkline && market.sparkline.length > 0 ? market.sparkline : primary.sparkline,
+    stats: {
+      age: primary.stats?.age || market.stats?.age || "—",
+      txns: Math.max(primary.stats?.txns ?? 0, market.stats?.txns ?? 0),
+      volume24h: Math.max(primary.stats?.volume24h ?? 0, market.stats?.volume24h ?? 0),
+      traders: Math.max(primary.stats?.traders ?? 0, market.stats?.traders ?? 0),
+      change6h:
+        (market.stats?.change6h ?? 0) !== 0
+          ? (market.stats?.change6h ?? 0)
+          : (primary.stats?.change6h ?? 0),
+      change24h:
+        (market.stats?.change24h ?? 0) !== 0
+          ? (market.stats?.change24h ?? 0)
+          : (primary.stats?.change24h ?? 0),
+      ath: Math.max(
+        market.stats?.ath ?? 0,
+        marketCap ?? 0,
+        // only trust primary ATH if it already had a real price
+        (primary.priceUsd ?? 0) > 0 ? (primary.stats?.ath ?? 0) : 0,
+      ),
+      boxUsd: Math.max(primary.stats?.boxUsd ?? 0, market.stats?.boxUsd ?? 0),
+    },
+  };
+}
 async function enrichLaunch(
   launch: {
     id: string;
@@ -237,7 +277,23 @@ export async function registerLaunchRoutes(app: FastifyInstance) {
     if (ponsapiLiveEnabled()) {
       try {
         const pons = await getPonsapiExploreLaunch(normalized);
-        if (pons) return { data: pons, source: "ponsapi" };
+        if (pons) {
+          const thinMarket =
+            (pons.priceUsd ?? 0) <= 0 ||
+            (pons.marketCap ?? 0) <= 0 ||
+            ((pons.stats?.volume24h ?? 0) <= 0 && (pons.stats?.txns ?? 0) <= 0);
+          if (thinMarket && env.ENABLE_DEXSCREENER_FEED) {
+            try {
+              const dex = await getDexExploreLaunch(normalized);
+              if (dex) {
+                return { data: mergeLaunchMarket(pons, dex), source: "ponsapi+dex" };
+              }
+            } catch (err) {
+              req.log.warn({ err }, "dexscreener enrich after ponsapi failed");
+            }
+          }
+          return { data: pons, source: "ponsapi" };
+        }
       } catch (err) {
         req.log.warn({ err }, "ponsapi token lookup failed");
       }
