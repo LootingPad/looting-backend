@@ -9,6 +9,11 @@ export const robinhood = {
   rpcUrls: {
     default: { http: [env.RPC_HTTP_URL] },
   },
+  contracts: {
+    multicall3: {
+      address: "0xcA11bde05977b3631167028862bE2a173976CA11" as const,
+    },
+  },
 } as const;
 
 /**
@@ -28,7 +33,9 @@ export function getPublicClient(): PublicClient {
     client = createPublicClient({
       chain: robinhood,
       transport: http(env.RPC_HTTP_URL, {
-        timeout: 30_000,
+        timeout: 8_000,
+        retryCount: 1,
+        batch: { batchSize: 100, wait: 0 },
         fetchOptions: { headers: RPC_FETCH_HEADERS },
       }),
     });

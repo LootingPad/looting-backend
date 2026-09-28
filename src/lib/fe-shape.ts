@@ -8,6 +8,8 @@ export const FE_FEES = {
   /** Display FX for ETH↔USD in Analytics / Shell until an oracle is wired. */
   ETH_USD: 3500,
   LOOTING_PRICE_USD: 0.0024,
+  /** Flat platform fee taken on every curve buy and sell. */
+  TRADE_FEE_USD: 0.056,
 } as const;
 
 /** APR display options for staking UI (Create Staking / Analytics). */

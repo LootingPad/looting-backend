@@ -390,6 +390,49 @@ model DevLock {
   @@map("dev_locks")
 }
 
+model TrenchPair {
+  id             String   @id @default(cuid())
+  chainId        Int
+  token          String
+  name           String
+  symbol         String
+  decimals       Int
+  totalSupply    String
+  logo           String
+  description    String
+  twitter        String   @default("")
+  telegram       String   @default("")
+  discord        String   @default("")
+  website        String   @default("")
+  farcaster      String   @default("")
+  deployer       String
+  curve          String
+  pairToken      String
+  launchConfigId String
+  txHash            String
+  blockNumber       BigInt
+  logIndex          Int
+  launchedAt        DateTime
+  stage             String   @default("new")
+  bondingPercentage Int      @default(0)
+  chainPhase        String   @default("NotGraduated")
+  stageChangedAt    DateTime @default(now())
+  mcap              String   @default("0")
+  athMcap           String   @default("0")
+  volume            String   @default("0")
+  taxPercent        Float    @default(0)
+  creatorTaxBps     Int      @default(0)
+  txns              Int      @default(0)
+  holders           Int      @default(0)
+  bundlers          Int      @default(0)
+
+  @@unique([chainId, token])
+  @@index([chainId, blockNumber])
+  @@index([chainId, stage, bondingPercentage])
+  @@index([chainId, stage, stageChangedAt])
+  @@map("trench_pairs")
+}
+
 model IndexerCheckpoint {
   id          String   @id @default(cuid())
   name        String   @unique

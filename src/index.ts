@@ -22,7 +22,10 @@ import {
   registerStakingActionRoutes,
 } from "./modules/staking-actions.js";
 import { registerStakingRoutes } from "./modules/staking.js";
+import { registerCurveTradeRoutes } from "./modules/curve-trade.js";
+import { registerTrenchRoutes } from "./modules/trenches.js";
 import { registerWalletRoutes } from "./modules/wallet.js";
+import { startTrenchIndexer } from "./pons-adapter/indexer.js";
 
 async function main() {
   const app = Fastify({
@@ -52,7 +55,10 @@ async function main() {
   await registerMetadataRoutes(app);
   await registerPrepareRoutes(app);
   await registerSwapRoutes(app);
+  await registerCurveTradeRoutes(app);
   await registerAdminRoutes(app);
+  await registerTrenchRoutes(app);
+  startTrenchIndexer();
 
 
   app.setErrorHandler((err, _req, reply) => {

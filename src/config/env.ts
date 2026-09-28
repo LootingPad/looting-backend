@@ -39,6 +39,18 @@ const envSchema = z.object({
   INDEXER_POLL_MS: z.coerce.number().int().positive().default(4000),
   INDEXER_CONFIRMATIONS: z.coerce.number().int().nonnegative().default(8),
   INDEXER_START_BLOCK: z.coerce.number().int().nonnegative().default(0),
+  TRADE_FEE_WALLET: z
+    .string()
+    .min(1)
+    .transform((v) => v.trim())
+    .refine((v) => /^0x[a-fA-F0-9]{40}$/.test(v), "invalid TRADE_FEE_WALLET"),
+  PONS_V2_FACTORY: z
+    .string()
+    .default("0x7eD598BcEf8bd9Edd8C97A195C6d13f40801EC7e")
+    .refine((v) => /^0x[a-fA-F0-9]{40}$/.test(v), "invalid address"),
+  TRENCH_POLL_MS: z.coerce.number().int().positive().default(200),
+  TRENCH_CONFIRMATIONS: z.coerce.number().int().nonnegative().default(0),
+  TRENCH_LOG_CHUNK: z.coerce.number().int().positive().default(99),
   PORT: z.coerce.number().int().positive().default(8080),
   CORS_ORIGIN: z.string().default("http://localhost:3000"),
   NODE_ENV: z.enum(["development", "test", "production"]).default("development"),

@@ -7,3 +7,4 @@ coverage/
 *.log
 prisma/*.db
 prisma/*.db-journal
+package-lock.json
