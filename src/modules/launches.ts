@@ -1,4 +1,10 @@
 import type { FastifyInstance } from "fastify";
+import {
+  getDexExploreLaunch,
+  listDexExploreLaunches,
+  type ExploreStage,
+  type FeLaunchCard,
+} from "../clients/dexscreener.js";
 import { getTokenMarketSnapshot } from "../clients/mobula.js";
 import { env } from "../config/env.js";
 import { prisma } from "../db/prisma.js";
@@ -13,7 +19,52 @@ import {
   type MarketEnrichment,
 } from "../lib/fe-shape.js";
 import { normalizeAddress } from "../lib/utils.js";
+import {
+  getPonsapiExploreLaunch,
+  listPonsapiExploreLaunches,
+  ponsapiLiveEnabled,
+  subscribeLiveLaunches,
+} from "../pons-adapter/live-feed.js";
 
+/** Fill missing price/mcap/volume from DexScreener; keep better activity counts. */
+function mergeLaunchMarket(primary: FeLaunchCard, market: FeLaunchCard): FeLaunchCard {
+  const priceUsd = (primary.priceUsd ?? 0) > 0 ? primary.priceUsd : market.priceUsd;
+  const marketCap = (primary.marketCap ?? 0) > 0 ? primary.marketCap : market.marketCap;
+
+  return {
+    ...primary,
+    marketCap,
+    priceUsd,
+    change1h:
+      (primary.change1h ?? 0) !== 0 ? primary.change1h : (market.change1h ?? primary.change1h),
+    progress: Math.max(primary.progress ?? 0, market.progress ?? 0),
+    phase: primary.phase === "graduated" || market.phase === "graduated" ? "graduated" : primary.phase,
+    logoUrl: primary.logoUrl || market.logoUrl,
+    sparkline:
+      market.sparkline && market.sparkline.length > 0 ? market.sparkline : primary.sparkline,
+    stats: {
+      age: primary.stats?.age || market.stats?.age || "—",
+      txns: Math.max(primary.stats?.txns ?? 0, market.stats?.txns ?? 0),
+      volume24h: Math.max(primary.stats?.volume24h ?? 0, market.stats?.volume24h ?? 0),
+      traders: Math.max(primary.stats?.traders ?? 0, market.stats?.traders ?? 0),
+      change6h:
+        (market.stats?.change6h ?? 0) !== 0
+          ? (market.stats?.change6h ?? 0)
+          : (primary.stats?.change6h ?? 0),
+      change24h:
+        (market.stats?.change24h ?? 0) !== 0
+          ? (market.stats?.change24h ?? 0)
+          : (primary.stats?.change24h ?? 0),
+      ath: Math.max(
+        market.stats?.ath ?? 0,
+        marketCap ?? 0,
+        // only trust primary ATH if it already had a real price
+        (primary.priceUsd ?? 0) > 0 ? (primary.stats?.ath ?? 0) : 0,
+      ),
+      boxUsd: Math.max(primary.stats?.boxUsd ?? 0, market.stats?.boxUsd ?? 0),
+    },
+  };
+}
 async function enrichLaunch(
   launch: {
     id: string;
@@ -43,8 +94,13 @@ async function enrichLaunch(
     }),
   ]);
 
-  const snap = (market ?? (await getTokenMarketSnapshot(launch.token))) as MarketEnrichment | null;
+  const snap = (market ?? (await getTokenMarketSnapshot(launch.token))) as
+    | (MarketEnrichment & { progress?: number })
+    | null;
   const shaped = toFeLaunch(launch, snap);
+  if (snap?.progress != null && shaped.phase !== "graduated") {
+    shaped.progress = Math.max(0, Math.min(100, Math.round(snap.progress)));
+  }
   const volumeFromTrades = Number(volumeAgg._sum.usdNotional ?? 0);
   const stats = toFeMarketStats(shaped, {
     launchedAt: launch.launchedAt,
@@ -113,10 +169,75 @@ async function holdersFromTrades(
 }
 
 export async function registerLaunchRoutes(app: FastifyInstance) {
+  /** SSE: push new Pons creates to Explore New Pair in realtime. */
+  app.get("/api/explore/stream", async (req, reply) => {
+    if (!ponsapiLiveEnabled()) {
+      return reply.code(503).send({ error: "PONSAPI_DISABLED" });
+    }
+
+    reply.hijack();
+    reply.raw.writeHead(200, {
+      "Content-Type": "text/event-stream; charset=utf-8",
+      "Cache-Control": "no-cache, no-transform",
+      Connection: "keep-alive",
+      "Access-Control-Allow-Origin": env.CORS_ORIGIN.split(",")[0]?.trim() || "*",
+    });
+    reply.raw.write(": connected\n\n");
+
+    const send = (event: string, payload: unknown) => {
+      reply.raw.write(`event: ${event}\ndata: ${JSON.stringify(payload)}\n\n`);
+    };
+
+    const unsub = subscribeLiveLaunches((card, kind) => {
+      send(kind === "new" ? "newToken" : "tokenUpdate", card);
+    });
+
+    const ping = setInterval(() => {
+      try {
+        reply.raw.write(": ping\n\n");
+      } catch {
+        /* closed */
+      }
+    }, 15_000);
+
+    const close = () => {
+      clearInterval(ping);
+      unsub();
+    };
+    req.raw.on("close", close);
+    req.raw.on("error", close);
+  });
+
   app.get("/api/launches", async (req) => {
-    const q = req.query as { limit?: string; offset?: string; status?: string };
-    const limit = Math.min(Number(q.limit ?? 50), 100);
+    const q = req.query as { limit?: string; offset?: string; status?: string; stage?: string };
+    const limit = Math.min(Number(q.limit ?? 50), 500);
     const offset = Number(q.offset ?? 0);
+    const stageRaw = (q.stage ?? "all").toLowerCase();
+    const stage: ExploreStage =
+      stageRaw === "new" || stageRaw === "almost" || stageRaw === "migrate" || stageRaw === "all"
+        ? stageRaw
+        : "all";
+
+    // New Pair / Almost → ponsapi live (Trenches-style creates). Migrate → DexScreener.
+    if (ponsapiLiveEnabled() && (stage === "new" || stage === "almost")) {
+      try {
+        const { data, total, source } = await listPonsapiExploreLaunches({ limit, offset, stage });
+        if (total > 0 || stage === "new") {
+          return { data, limit, offset, total, stage, source };
+        }
+      } catch (err) {
+        req.log.warn({ err }, "ponsapi explore feed failed; trying dexscreener");
+      }
+    }
+
+    if (env.ENABLE_DEXSCREENER_FEED) {
+      try {
+        const { data, total, source } = await listDexExploreLaunches({ limit, offset, stage });
+        return { data, limit, offset, total, stage, source };
+      } catch (err) {
+        req.log.warn({ err }, "dexscreener explore feed failed; falling back to db");
+      }
+    }
 
     const launches = await prisma.launch.findMany({
       where: {
@@ -141,7 +262,7 @@ export async function registerLaunchRoutes(app: FastifyInstance) {
       launches.map((l) => enrichLaunch(l, marketByToken.get(l.token) ?? null)),
     );
 
-    return { data, limit, offset };
+    return { data, limit, offset, source: "db" };
   });
 
   app.get("/api/launches/:token", async (req, reply) => {
@@ -153,13 +274,47 @@ export async function registerLaunchRoutes(app: FastifyInstance) {
       return reply.code(400).send({ error: "INVALID_ADDRESS" });
     }
 
+    if (ponsapiLiveEnabled()) {
+      try {
+        const pons = await getPonsapiExploreLaunch(normalized);
+        if (pons) {
+          const thinMarket =
+            (pons.priceUsd ?? 0) <= 0 ||
+            (pons.marketCap ?? 0) <= 0 ||
+            ((pons.stats?.volume24h ?? 0) <= 0 && (pons.stats?.txns ?? 0) <= 0);
+          if (thinMarket && env.ENABLE_DEXSCREENER_FEED) {
+            try {
+              const dex = await getDexExploreLaunch(normalized);
+              if (dex) {
+                return { data: mergeLaunchMarket(pons, dex), source: "ponsapi+dex" };
+              }
+            } catch (err) {
+              req.log.warn({ err }, "dexscreener enrich after ponsapi failed");
+            }
+          }
+          return { data: pons, source: "ponsapi" };
+        }
+      } catch (err) {
+        req.log.warn({ err }, "ponsapi token lookup failed");
+      }
+    }
+
+    if (env.ENABLE_DEXSCREENER_FEED) {
+      try {
+        const dex = await getDexExploreLaunch(normalized);
+        if (dex) return { data: dex, source: "dexscreener" };
+      } catch (err) {
+        req.log.warn({ err }, "dexscreener token lookup failed");
+      }
+    }
+
     const launch = await prisma.launch.findUnique({
       where: { chainId_token: { chainId: env.CHAIN_ID, token: normalized } },
     });
     if (!launch) return reply.code(404).send({ error: "NOT_FOUND" });
 
     const data = await enrichLaunch(launch);
-    return { data };
+    return { data, source: "db" };
   });
 
   app.get("/api/launches/:token/trades", async (req, reply) => {
@@ -178,7 +333,7 @@ export async function registerLaunchRoutes(app: FastifyInstance) {
     const launch = await prisma.launch.findUnique({
       where: { chainId_token: { chainId: env.CHAIN_ID, token: normalized } },
     });
-    if (!launch) return reply.code(404).send({ error: "NOT_FOUND" });
+    if (!launch) return { data: [], limit, offset };
 
     const trades = await prisma.trade.findMany({
       where: {
@@ -209,7 +364,7 @@ export async function registerLaunchRoutes(app: FastifyInstance) {
     const launch = await prisma.launch.findUnique({
       where: { chainId_token: { chainId: env.CHAIN_ID, token: normalized } },
     });
-    if (!launch) return reply.code(404).send({ error: "NOT_FOUND" });
+    if (!launch) return { data: [] };
 
     const market = await getTokenMarketSnapshot(normalized);
     const shaped = toFeLaunch(launch, market);
@@ -226,13 +381,25 @@ export async function registerLaunchRoutes(app: FastifyInstance) {
       return reply.code(400).send({ error: "INVALID_ADDRESS" });
     }
 
+    if (env.ENABLE_DEXSCREENER_FEED) {
+      try {
+        const { data } = await listDexExploreLaunches({ limit: 500, offset: 0, stage: "all" });
+        return {
+          data: data.filter((l) => l.creator.toLowerCase() === creator),
+          source: "dexscreener",
+        };
+      } catch {
+        /* fall through */
+      }
+    }
+
     const launches = await prisma.launch.findMany({
       where: { chainId: env.CHAIN_ID, creator },
       orderBy: { launchedAt: "desc" },
     });
 
     const data = await Promise.all(launches.map((l) => enrichLaunch(l)));
-    return { data };
+    return { data, source: "db" };
   });
 
   app.get("/api/launch/:token/rewards", async (req, reply) => {
@@ -247,7 +414,7 @@ export async function registerLaunchRoutes(app: FastifyInstance) {
     const launch = await prisma.launch.findUnique({
       where: { chainId_token: { chainId: env.CHAIN_ID, token: normalized } },
     });
-    if (!launch) return reply.code(404).send({ error: "NOT_FOUND" });
+    if (!launch) return { data: [] };
 
     const rewards = await prisma.reward.findMany({
       where: { launchId: launch.id },

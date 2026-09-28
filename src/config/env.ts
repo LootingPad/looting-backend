@@ -36,6 +36,15 @@ const envSchema = z.object({
     .string()
     .default("false")
     .transform((v) => v === "true" || v === "1"),
+  /** Explore coins from DexScreener (Robinhood) — Migrate / DEX-listed. */
+  ENABLE_DEXSCREENER_FEED: z
+    .string()
+    .default("true")
+    .transform((v) => v === "true" || v === "1"),
+  /** ponsapi.dev — live New Pair / Almost (Pons V2 creates). */
+  PONSAPI_API_KEY: z.string().optional().default(""),
+  PONSAPI_BASE_URL: z.string().url().optional().default("https://api.ponsapi.dev"),
+  PONSAPI_WS_URL: z.string().optional().default("wss://api.ponsapi.dev/v1/ws"),
   INDEXER_POLL_MS: z.coerce.number().int().positive().default(4000),
   INDEXER_CONFIRMATIONS: z.coerce.number().int().nonnegative().default(8),
   INDEXER_START_BLOCK: z.coerce.number().int().nonnegative().default(0),

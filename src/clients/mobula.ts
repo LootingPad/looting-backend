@@ -107,25 +107,114 @@ export async function getTokenOhlcv(opts: {
   return data;
 }
 
+/** Local seed tokens (scripts/seed-demo-launches.ts) — Mobula has no quotes for these. */
+const DEMO_MARKET: Record<
+  string,
+  { priceUsd: number; marketCap: number; volume24h: number; change1h: number; progress: number }
+> = {
+  "0xa1b2c3d4e5f678901234567890abcdef12345601": {
+    priceUsd: 0.000186,
+    marketCap: 186_420,
+    volume24h: 94_200,
+    change1h: 14.2,
+    progress: 72,
+  },
+  "0xa1b2c3d4e5f678901234567890abcdef12345602": {
+    priceUsd: 0.000084,
+    marketCap: 84_210,
+    volume24h: 41_800,
+    change1h: -3.4,
+    progress: 41,
+  },
+  "0xa1b2c3d4e5f678901234567890abcdef12345603": {
+    priceUsd: 0.00094,
+    marketCap: 940_000,
+    volume24h: 312_400,
+    change1h: 2.1,
+    progress: 100,
+  },
+  "0xa1b2c3d4e5f678901234567890abcdef12345604": {
+    priceUsd: 0.000012,
+    marketCap: 12_440,
+    volume24h: 6_820,
+    change1h: 28.6,
+    progress: 18,
+  },
+  "0xa1b2c3d4e5f678901234567890abcdef12345605": {
+    priceUsd: 0.000257,
+    marketCap: 256_800,
+    volume24h: 128_000,
+    change1h: 6.4,
+    progress: 88,
+  },
+};
+
+export function getDemoMarket(tokenAddress: string) {
+  return DEMO_MARKET[tokenAddress.trim().toLowerCase()] ?? null;
+}
+
 /** Best-effort price enrichment for launch cards. */
 export async function getTokenMarketSnapshot(tokenAddress: string): Promise<{
   priceUsd?: number;
   marketCap?: number;
   volume24h?: number;
   liquidity?: number;
+  change1h?: number;
+  change6h?: number;
+  change24h?: number;
+  ath?: number;
+  txns?: number;
+  progress?: number;
 } | null> {
+  const demo = getDemoMarket(tokenAddress);
+  if (demo) return { ...demo };
+
   try {
     const raw = (await getTokenMetadata(tokenAddress)) as Record<string, unknown>;
     const nested = (raw.data ?? raw) as Record<string, unknown>;
-    const price =
-      Number(nested.price ?? nested.priceUSD ?? nested.price_usd ?? NaN) || undefined;
-    const marketCap =
-      Number(nested.market_cap ?? nested.marketCap ?? nested.marketCapUSD ?? NaN) || undefined;
-    const volume24h =
-      Number(nested.volume ?? nested.volume_24h ?? nested.volume24h ?? NaN) || undefined;
-    const liquidity =
-      Number(nested.liquidity ?? nested.liquidityUSD ?? NaN) || undefined;
-    return { priceUsd: price, marketCap, volume24h, liquidity };
+    const priceChange = (nested.price_change_24h ?? nested.priceChange24h ?? nested.priceChange) as
+      | Record<string, unknown>
+      | number
+      | undefined;
+
+    const num = (v: unknown) => {
+      const n = Number(v);
+      return Number.isFinite(n) ? n : undefined;
+    };
+
+    const price = num(nested.price ?? nested.priceUSD ?? nested.price_usd);
+    const marketCap = num(nested.market_cap ?? nested.marketCap ?? nested.marketCapUSD);
+    const volume24h = num(
+      nested.volume ?? nested.volume_24h ?? nested.volume24h ?? nested.volume_24h_usd,
+    );
+    const liquidity = num(nested.liquidity ?? nested.liquidityUSD);
+    const ath = num(nested.ath ?? nested.athMarketCap ?? nested.ath_market_cap ?? nested.market_cap_ath);
+
+    let change1h = num(nested.price_change_1h ?? nested.priceChange1h ?? nested.change_1h);
+    let change6h = num(nested.price_change_6h ?? nested.priceChange6h);
+    let change24h = num(nested.price_change_24h ?? nested.priceChange24h ?? nested.change_24h);
+
+    if (priceChange && typeof priceChange === "object") {
+      change1h = change1h ?? num(priceChange["1h"] ?? priceChange.h1);
+      change6h = change6h ?? num(priceChange["6h"] ?? priceChange.h6);
+      change24h = change24h ?? num(priceChange["24h"] ?? priceChange.h24);
+    } else if (typeof priceChange === "number") {
+      change24h = change24h ?? priceChange;
+    }
+
+    const txns = num(nested.trades_24h ?? nested.txns_24h ?? nested.transactions_24h ?? nested.trades);
+
+    return {
+      priceUsd: price,
+      marketCap,
+      volume24h,
+      liquidity,
+      change1h,
+      change6h,
+      change24h,
+      ath,
+      txns,
+    };
   } catch {
     return null;
   }
