@@ -136,6 +136,7 @@ async function readMarkets(rows: TrenchPair[]): Promise<Map<string, Market>> {
       const raisedRaw = raised?.status === "success" ? (raised.result as bigint) : 0n;
       const bondingPercentage = bonding(raisedRaw, thresholdRaw, phase);
       const feeBps = fee?.status === "success" ? Number(fee.result) : 0;
+      void feeBps;
       const curveTaxBps = creator?.status === "success" ? Number(creator.result) : creatorTaxBps;
       const quoteDecimals = row.pairToken === ZERO ? 18 : 18;
       let mcapRaw = 0n;
@@ -152,7 +153,7 @@ async function readMarkets(rows: TrenchPair[]): Promise<Map<string, Market>> {
         creatorFeeRecipient,
         creatorTaxBps,
         buybackEnabled,
-        taxPercent: (feeBps + curveTaxBps) / 100,
+        taxPercent: curveTaxBps / 100,
         mcap: formatAmount(mcapRaw, quoteDecimals),
       });
     });

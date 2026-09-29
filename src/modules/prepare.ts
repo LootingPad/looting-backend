@@ -7,7 +7,7 @@ import { getPublicClient } from "../clients/rpc.js";
 import { contractsConfigured, env } from "../config/env.js";
 import { prisma } from "../db/prisma.js";
 import { normalizeAddress } from "../lib/utils.js";
-import { tokenAbi, tokenLaunchedEvent } from "../pons-adapter/abi.js";
+import { launchViaLootingEvent, tokenAbi, tokenLaunchedEvent } from "../pons-adapter/abi.js";
 import { publishTrenchPair } from "../pons-adapter/hub.js";
 import { LaunchPrepareError, preparePonsLaunch } from "../pons-adapter/launch.js";
 
@@ -23,6 +23,15 @@ async function waitForReceipt(txHash: Hex) {
 }
 
 function parseTokenLaunched(logs: Log[]) {
+  let launched: {
+    token: string;
+    curve: string;
+    deployer: string;
+    pairToken: string;
+    launchConfigId: string;
+    logIndex: number;
+  } | null = null;
+
   for (const log of logs) {
     try {
       const decoded = decodeEventLog({
@@ -39,7 +48,7 @@ function parseTokenLaunched(logs: Log[]) {
         launchConfigId: bigint;
         graduationThreshold: bigint;
       };
-      return {
+      launched = {
         token: getAddress(args.token).toLowerCase(),
         curve: getAddress(args.curve).toLowerCase(),
         deployer: getAddress(args.deployer).toLowerCase(),
@@ -47,11 +56,32 @@ function parseTokenLaunched(logs: Log[]) {
         launchConfigId: args.launchConfigId.toString(),
         logIndex: Number(log.logIndex ?? 0),
       };
+      break;
     } catch {
       /* not this event */
     }
   }
-  return null;
+  if (!launched) return null;
+
+  // Prefer LOOTING router event so creator = the user wallet, not the router deployer.
+  for (const log of logs) {
+    try {
+      const decoded = decodeEventLog({
+        abi: [launchViaLootingEvent],
+        data: log.data,
+        topics: log.topics,
+      });
+      if (decoded.eventName !== "LaunchViaLooting") continue;
+      const args = decoded.args as { creator: Address; token: Address; curve: Address };
+      if (getAddress(args.token).toLowerCase() !== launched.token) continue;
+      launched.deployer = getAddress(args.creator).toLowerCase();
+      break;
+    } catch {
+      /* not this event */
+    }
+  }
+
+  return launched;
 }
 
 async function hydrateTokenMeta(token: Address) {

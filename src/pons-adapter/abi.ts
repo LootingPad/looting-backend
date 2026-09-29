@@ -4,6 +4,10 @@ export const tokenLaunchedEvent = parseAbiItem(
   "event TokenLaunched(address indexed token, address indexed curve, address indexed deployer, address pairToken, uint256 launchConfigId, uint256 graduationThreshold)",
 );
 
+export const launchViaLootingEvent = parseAbiItem(
+  "event LaunchViaLooting(address indexed creator, address indexed token, address indexed curve, uint256 lootingFeePaid, uint256 ponsFeePaid)",
+);
+
 export const factoryAbi = parseAbi([
   "struct LaunchedToken { address token; address curve; address deployer; address creatorFeeRecipient; address pairToken; uint256 graduationThreshold; uint24 poolFee; int24 tickSpacing; uint16 creatorTaxBps; bool buybackEnabled; uint8 phase; uint256 sweptQuote; uint256 sweptTokens; uint256 sweptAt; bool exists; }",
   "struct LaunchConfig { uint256 supply; uint256 curveFeeBps; uint256 phantomQuote; uint256 graduationThreshold; uint24 poolFee; int24 tickSpacing; bool enabled; }",
@@ -21,6 +25,15 @@ export const factoryAbi = parseAbi([
   "function previewLaunchEconomics(uint256 launchConfigId, address pairToken) view returns (bytes32)",
   "function launchToken(TokenParams params, uint256 launchConfigId, address pairToken) payable returns (address token, address curve)",
   "function launchToken(TokenParams params, uint256 launchConfigId, address pairToken, address[] snipeTaxExemptions) payable returns (address token, address curve)",
+]);
+
+/** LOOTING one-confirm launch router (Pons launchFee + LOOTING remainder in one tx). */
+export const launchRouterAbi = parseAbi([
+  "struct Socials { string twitter; string telegram; string discord; string website; string farcaster; }",
+  "struct TokenParams { string name; string symbol; string logo; string description; Socials socials; address creatorFeeRecipient; uint16 creatorTaxBps; bool buybackEnabled; bytes32 expectedEconomics; bytes32 salt; }",
+  "function launch(TokenParams params, uint256 launchConfigId, address pairToken) payable returns (address token, address curve)",
+  "function launch(TokenParams params, uint256 launchConfigId, address pairToken, address[] snipeTaxExemptions) payable returns (address token, address curve)",
+  "function fee() view returns (uint256)",
 ]);
 
 export const launchAndBuyAbi = parseAbi([

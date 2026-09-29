@@ -63,6 +63,23 @@ const envSchema = z.object({
     .string()
     .default("0x7eD598BcEf8bd9Edd8C97A195C6d13f40801EC7e")
     .refine((v) => /^0x[a-fA-F0-9]{40}$/.test(v), "invalid address"),
+  /**
+   * Optional one-confirm launch router (LootingLaunchRouter). When set, prepare returns a single
+   * call: pay LOOTING 0.00035 + Pons launchFee in one user tx. Empty = legacy two-call path.
+   */
+  LOOTING_LAUNCH_ROUTER: addressOrEmpty,
+  /**
+   * Public origin for absolute media URLs written on-chain.
+   * Must be reachable by GMGN / Axiom / explorers — never localhost.
+   * Prefer IPFS (PINATA_JWT) when available; this is the HTTPS fallback.
+   */
+  PUBLIC_API_BASE: z
+    .string()
+    .optional()
+    .default("https://api.lootingpad.com")
+    .transform((v) => v.trim().replace(/\/$/, "")),
+  /** Pinata JWT for pinning launch logos to public IPFS (ipfs://… on-chain). */
+  PINATA_JWT: z.string().optional().default(""),
   TRENCH_POLL_MS: z.coerce.number().int().positive().default(200),
   TRENCH_CONFIRMATIONS: z.coerce.number().int().nonnegative().default(0),
   TRENCH_LOG_CHUNK: z.coerce.number().int().positive().default(99),

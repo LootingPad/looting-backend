@@ -423,6 +423,7 @@ export async function readTrenchPairs(rows: TrenchPair[], opts?: { deadline?: nu
     const thresholdRaw =
       threshold?.status === "success" ? (threshold.result as bigint) : BigInt(graduationThreshold);
     const feeBps = fee?.status === "success" ? Number(fee.result) : 0;
+    void feeBps;
     const curveTaxBps = creator?.status === "success" ? Number(creator.result) : creatorTaxBps;
 
     return {
@@ -449,7 +450,7 @@ export async function readTrenchPairs(rows: TrenchPair[], opts?: { deadline?: nu
       creatorTaxBps,
       buybackEnabled,
       phase,
-      taxPercent: (feeBps + curveTaxBps) / 100,
+      taxPercent: curveTaxBps / 100,
       mcap: formatAmount(mcapRaw, quoteDecimals),
       athMcap: formatAmount(athRaw, quoteDecimals),
       txns: stats.txns,

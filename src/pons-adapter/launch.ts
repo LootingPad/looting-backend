@@ -2,7 +2,6 @@ import {
   encodeFunctionData,
   getAddress,
   isAddress,
-  parseAbi,
   parseEther,
   parseUnits,
   toHex,
@@ -12,7 +11,7 @@ import {
 } from "viem";
 import { getPublicClient } from "../clients/rpc.js";
 import { env } from "../config/env.js";
-import { erc20Abi, factoryAbi, launchAndBuyAbi } from "./abi.js";
+import { erc20Abi, factoryAbi, launchAndBuyAbi, launchRouterAbi } from "./abi.js";
 
 const ZERO = zeroAddress;
 const DEFAULT_LAUNCH_CONFIG_ID = 0n;
@@ -20,12 +19,6 @@ const DEFAULT_LAUNCH_CONFIG_ID = 0n;
 export const PONS_LAUNCH_AND_BUY = getAddress("0xe33E9E479dF8802cb0866d5d05258bEc4cF62948");
 /** LOOTING cut of the create fee (total 0.00085 − Pons launchFee 0.0005). */
 export const LOOTING_LAUNCH_FEE_REMAINDER_WEI = parseEther("0.00035");
-/** Canonical Multicall3 — one user tx for Pons launch + LOOTING fee remainder. */
-const MULTICALL3 = getAddress("0xcA11bde05977b3631167028862bE2a173976CA11");
-const multicall3Abi = parseAbi([
-  "struct Call3Value { address target; bool allowFailure; uint256 value; bytes callData; }",
-  "function aggregate3Value((address target, bool allowFailure, uint256 value, bytes callData)[] calls) payable returns ((bool success, bytes returnData)[] returnData)",
-]);
 
 export class LaunchPrepareError extends Error {
   code: string;
@@ -40,6 +33,10 @@ export type LaunchCall = {
   to: Address;
   data: Hex;
   value: string;
+  /** Optional gas limit (hex or decimal string) so wallets can skip flaky estimateGas. */
+  gas?: string;
+  maxFeePerGas?: string;
+  maxPriorityFeePerGas?: string;
 };
 
 export type PrepareLaunchInput = {
@@ -80,6 +77,7 @@ export type PrepareLaunchResult = {
   launchConfigId: string;
   salt: Hex;
   expectedEconomics: Hex;
+  /** On-chain creatorTaxBps — exactly the % the creator set. */
   creatorTaxBps: number;
   mode: "launch" | "launchAndBuy";
 };
@@ -89,7 +87,12 @@ function cleanText(value: string | undefined, max: number): string {
 }
 
 function cleanHandle(value: string | undefined, max = 64): string {
-  return cleanText(value, max).replace(/^@/, "");
+  let text = cleanText(value, max).replace(/^@/, "");
+  text = text
+    .replace(/^https?:\/\/(www\.)?(twitter\.com|x\.com)\//i, "")
+    .replace(/^https?:\/\/(www\.)?t\.me\//i, "")
+    .replace(/\/$/, "");
+  return text.slice(0, max);
 }
 
 /** On-chain logo must stay short — never embed data: URLs. */
@@ -100,12 +103,20 @@ function sanitizeLogo(logo: string | undefined): string {
   if (value.length > 256) {
     throw new LaunchPrepareError("INVALID_LOGO", "Logo URI is too long.");
   }
-  if (
-    value.startsWith("ipfs://") ||
-    value.startsWith("ar://") ||
-    value.startsWith("https://") ||
-    value.startsWith("http://")
-  ) {
+  if (value.startsWith("ipfs://") || value.startsWith("ar://")) return value;
+  if (value.startsWith("https://") || value.startsWith("http://")) {
+    try {
+      const host = new URL(value).hostname.toLowerCase();
+      if (host === "localhost" || host === "127.0.0.1" || host.endsWith(".local")) {
+        throw new LaunchPrepareError(
+          "INVALID_LOGO",
+          "Logo must be a public https:// URL (not localhost) so GMGN and other terminals can load it.",
+        );
+      }
+    } catch (err) {
+      if (err instanceof LaunchPrepareError) throw err;
+      throw new LaunchPrepareError("INVALID_LOGO", "Logo must be an ipfs:// or https:// URI.");
+    }
     return value;
   }
   throw new LaunchPrepareError("INVALID_LOGO", "Logo must be an ipfs:// or https:// URI.");
@@ -178,24 +189,6 @@ function weiToEthString(wei: bigint): string {
   const whole = wei / 10n ** 18n;
   const frac = (wei % 10n ** 18n).toString().padStart(18, "0").replace(/0+$/, "");
   return frac ? `${whole}.${frac}` : whole.toString();
-}
-
-function bundleLaunchAndLootingFee(
-  target: Address,
-  data: Hex,
-  ponsValue: bigint,
-  feeWallet: Address,
-  lootingFee: bigint,
-): LaunchCall {
-  const inner = [
-    { target, allowFailure: false, value: ponsValue, callData: data },
-    { target: feeWallet, allowFailure: false, value: lootingFee, callData: "0x" as Hex },
-  ];
-  return {
-    to: MULTICALL3,
-    data: encodeFunctionData({ abi: multicall3Abi, functionName: "aggregate3Value", args: [inner] }),
-    value: (ponsValue + lootingFee).toString(),
-  };
 }
 
 export async function preparePonsLaunch(input: PrepareLaunchInput): Promise<PrepareLaunchResult> {
@@ -316,6 +309,11 @@ export async function preparePonsLaunch(input: PrepareLaunchInput): Promise<Prep
   let ponsValue = launchFee;
   let launchData: Hex;
   let launchTarget: Address = factory;
+  const routerAddr = env.LOOTING_LAUNCH_ROUTER?.trim()
+    ? getAddress(env.LOOTING_LAUNCH_ROUTER)
+    : null;
+  /** One-confirm path: router collects LOOTING fee then calls Pons. Not used for launchAndBuy yet. */
+  const useRouter = Boolean(routerAddr) && quoteIn === 0n;
 
   if (quoteIn > 0n) {
     mode = "launchAndBuy";
@@ -346,6 +344,22 @@ export async function preparePonsLaunch(input: PrepareLaunchInput): Promise<Prep
       functionName: "launchAndBuy",
       args: [params, launchConfigId, pairToken, quoteIn, 0n, wallet, exemptions],
     });
+  } else if (useRouter && routerAddr) {
+    launchTarget = routerAddr;
+    ponsValue = launchFee + lootingFee;
+    if (exemptions.length > 0) {
+      launchData = encodeFunctionData({
+        abi: launchRouterAbi,
+        functionName: "launch",
+        args: [params, launchConfigId, pairToken, exemptions],
+      });
+    } else {
+      launchData = encodeFunctionData({
+        abi: launchRouterAbi,
+        functionName: "launch",
+        args: [params, launchConfigId, pairToken],
+      });
+    }
   } else if (exemptions.length > 0) {
     launchData = encodeFunctionData({
       abi: factoryAbi,
@@ -360,7 +374,58 @@ export async function preparePonsLaunch(input: PrepareLaunchInput): Promise<Prep
     });
   }
 
-  calls.push(bundleLaunchAndLootingFee(launchTarget, launchData, ponsValue, feeWallet, lootingFee));
+  // Prefer LootingLaunchRouter (one wallet confirm). Fallback: factory + separate fee tx.
+  // Never Multicall3: Pons uses msg.sender as deployer.
+  const launchCall: LaunchCall = {
+    to: launchTarget,
+    data: launchData,
+    value: ponsValue.toString(),
+  };
+
+  // Prefill gas + EIP-1559 fees so MetaMask/Phantom can show a fee without failing estimate.
+  try {
+    const [gas, block, priority] = await Promise.all([
+      client.estimateGas({
+        account: wallet,
+        to: launchTarget,
+        data: launchData,
+        value: ponsValue,
+      }),
+      client.getBlock({ blockTag: "latest" }),
+      client.estimateMaxPriorityFeePerGas().catch(() => 1_000_000n),
+    ]);
+    const base = block.baseFeePerGas ?? 20_000_000n;
+    const tip = priority > 0n ? priority : 1_000_000n;
+    const maxFee = base * 2n + tip;
+    launchCall.gas = ((gas * 120n) / 100n).toString();
+    launchCall.maxPriorityFeePerGas = tip.toString();
+    launchCall.maxFeePerGas = maxFee.toString();
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    if (/insufficient|fund|balance/i.test(message)) {
+      throw new LaunchPrepareError(
+        "INSUFFICIENT_FUNDS",
+        "Wallet needs enough ETH for the launch fee (0.00085) plus gas.",
+      );
+    }
+    launchCall.gas = useRouter ? "5000000" : "4500000";
+  }
+
+  calls.push(launchCall);
+
+  if (!useRouter) {
+    const feeCall: LaunchCall = {
+      to: feeWallet,
+      data: "0x",
+      value: lootingFee.toString(),
+      gas: "21000",
+    };
+    if (launchCall.maxFeePerGas) {
+      feeCall.maxFeePerGas = launchCall.maxFeePerGas;
+      feeCall.maxPriorityFeePerGas = launchCall.maxPriorityFeePerGas;
+    }
+    calls.push(feeCall);
+  }
 
   const totalFee = launchFee + lootingFee;
   return {
