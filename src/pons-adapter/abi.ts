@@ -6,7 +6,27 @@ export const tokenLaunchedEvent = parseAbiItem(
 
 export const factoryAbi = parseAbi([
   "struct LaunchedToken { address token; address curve; address deployer; address creatorFeeRecipient; address pairToken; uint256 graduationThreshold; uint24 poolFee; int24 tickSpacing; uint16 creatorTaxBps; bool buybackEnabled; uint8 phase; uint256 sweptQuote; uint256 sweptTokens; uint256 sweptAt; bool exists; }",
+  "struct LaunchConfig { uint256 supply; uint256 curveFeeBps; uint256 phantomQuote; uint256 graduationThreshold; uint24 poolFee; int24 tickSpacing; bool enabled; }",
+  "struct Socials { string twitter; string telegram; string discord; string website; string farcaster; }",
+  "struct TokenParams { string name; string symbol; string logo; string description; Socials socials; address creatorFeeRecipient; uint16 creatorTaxBps; bool buybackEnabled; bytes32 expectedEconomics; bytes32 salt; }",
   "function getLaunchedToken(address token) view returns (LaunchedToken)",
+  "function launchConfigCount() view returns (uint256)",
+  "function getLaunchConfig(uint256 id) view returns (LaunchConfig)",
+  "function launchFee() view returns (uint256)",
+  "function launchEnabled() view returns (bool)",
+  "function maxCreatorTaxBps() view returns (uint16)",
+  "function canLaunch(address account) view returns (bool)",
+  "function approvedPairTokens(address pairToken) view returns (bool)",
+  "function pairTokenEconomics(address pairToken) view returns (uint256 phantomQuote, uint256 graduationThreshold, uint8 decimals)",
+  "function previewLaunchEconomics(uint256 launchConfigId, address pairToken) view returns (bytes32)",
+  "function launchToken(TokenParams params, uint256 launchConfigId, address pairToken) payable returns (address token, address curve)",
+  "function launchToken(TokenParams params, uint256 launchConfigId, address pairToken, address[] snipeTaxExemptions) payable returns (address token, address curve)",
+]);
+
+export const launchAndBuyAbi = parseAbi([
+  "struct Socials { string twitter; string telegram; string discord; string website; string farcaster; }",
+  "struct TokenParams { string name; string symbol; string logo; string description; Socials socials; address creatorFeeRecipient; uint16 creatorTaxBps; bool buybackEnabled; bytes32 expectedEconomics; bytes32 salt; }",
+  "function launchAndBuy(TokenParams params, uint256 launchConfigId, address pairToken, uint256 quoteIn, uint256 minTokensOut, address recipient, address[] snipeTaxExemptions) payable returns (address token, address curve, uint256 tokensOut)",
 ]);
 
 export const tokenAbi = parseAbi([

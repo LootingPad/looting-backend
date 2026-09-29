@@ -112,7 +112,7 @@ export async function prepareCurveTrade(input: {
       ...(spendToken
         ? [{ address: spendToken, abi: erc20Abi, functionName: "allowance" as const, args: [wallet, spender] as const }]
         : []),
-    ],
+    ] as Parameters<typeof client.multicall>[0]["contracts"],
   });
 
   const graduated = results[0]?.status === "success" && results[0].result === true;

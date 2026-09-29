@@ -218,24 +218,22 @@ export async function registerLaunchRoutes(app: FastifyInstance) {
         ? stageRaw
         : "all";
 
-    // New Pair / Almost → ponsapi live (Trenches-style creates). Migrate → DexScreener.
-    if (ponsapiLiveEnabled() && (stage === "new" || stage === "almost")) {
+    // New Pair / Almost → ponsapi live. Never pad empty boards with DexScreener.
+    if (ponsapiLiveEnabled() && (stage === "new" || stage === "almost" || stage === "all")) {
       try {
         const { data, total, source } = await listPonsapiExploreLaunches({ limit, offset, stage });
-        if (total > 0 || stage === "new") {
-          return { data, limit, offset, total, stage, source };
-        }
+        return { data, limit, offset, total, stage, source };
       } catch (err) {
-        req.log.warn({ err }, "ponsapi explore feed failed; trying dexscreener");
+        req.log.warn({ err }, "ponsapi explore feed failed; falling back to db");
       }
     }
 
-    if (env.ENABLE_DEXSCREENER_FEED) {
+    if (env.ENABLE_DEXSCREENER_FEED && stage === "migrate") {
       try {
         const { data, total, source } = await listDexExploreLaunches({ limit, offset, stage });
         return { data, limit, offset, total, stage, source };
       } catch (err) {
-        req.log.warn({ err }, "dexscreener explore feed failed; falling back to db");
+        req.log.warn({ err }, "dexscreener migrate feed failed; falling back to db");
       }
     }
 

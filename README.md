@@ -108,6 +108,8 @@ Stake / Unstake / Claim. Trade / BUY qualification indexing is gated by
 
 ## Known limits
 
+- Create launch prepares Pons V2 `launchToken` / `launchAndBuy` (ETH pair only for now; stock quote assets need approved addresses).
+- Create form logos that are local `data:` images are not pinned to IPFS yet — on-chain logo stays empty until an `ipfs://` / `https://` URI is supplied.
 - DEX Screener is not integrated (Mobula covers charts + metadata).
 - Uniswap prepare uses the V3 SwapRouter02 path; V4 Universal Router encoding is deferred.
 - Keeper buyback route builder for `FeeSplitter.buyback` waits on the LOOTING token + adapter.

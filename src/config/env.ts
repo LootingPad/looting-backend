@@ -53,6 +53,12 @@ const envSchema = z.object({
     .min(1)
     .transform((v) => v.trim())
     .refine((v) => /^0x[a-fA-F0-9]{40}$/.test(v), "invalid TRADE_FEE_WALLET"),
+  /** Receives LOOTING's 0.00035 ETH share of the 0.00085 create fee. */
+  LAUNCH_FEE_WALLET: z
+    .string()
+    .default("0xD712570969461D9f736a76e290a4Ee700509a59B")
+    .transform((v) => v.trim())
+    .refine((v) => /^0x[a-fA-F0-9]{40}$/.test(v), "invalid LAUNCH_FEE_WALLET"),
   PONS_V2_FACTORY: z
     .string()
     .default("0x7eD598BcEf8bd9Edd8C97A195C6d13f40801EC7e")
