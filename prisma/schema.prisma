@@ -469,3 +469,14 @@ model RewardTableConfig {
 
   @@map("reward_table_configs")
 }
+
+/** Launch logos uploaded by creators — served at /api/media/:id. */
+model MediaAsset {
+  id          String   @id @default(cuid())
+  contentType String
+  data        Bytes
+  byteLength  Int
+  createdAt   DateTime @default(now())
+
+  @@map("media_assets")
+}

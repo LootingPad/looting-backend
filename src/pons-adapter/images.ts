@@ -1,6 +1,7 @@
 import type { Address } from "viem";
 import { getPublicClient } from "../clients/rpc.js";
 import { prisma } from "../db/prisma.js";
+import { loadMediaAsset, mediaIdFromLogo } from "../modules/media.js";
 import { tokenAbi } from "./abi.js";
 
 /** Prefer gateways that still serve anonymous reads; public ipfs.io/pinata often 429. */
@@ -41,13 +42,16 @@ function ipfsPath(logo: string): string | null {
 function publicHttps(logo: string): string | null {
   const value = logo.trim();
   if (!value || value.startsWith("ipfs://") || value.startsWith("ar://")) return null;
+  // Our own media URLs are loaded from Postgres — never HTTP-fetch them.
+  if (mediaIdFromLogo(value)) return null;
   try {
     const url = new URL(value);
-    if (url.protocol !== "https:") return null;
+    if (url.protocol !== "https:" && url.protocol !== "http:") return null;
     const host = url.hostname.toLowerCase();
     if (host === "localhost" || host.endsWith(".local") || host === "127.0.0.1" || host === "0.0.0.0") {
       return null;
     }
+    if (url.protocol === "http:") return null;
     return url.toString();
   } catch {
     return null;
@@ -159,6 +163,19 @@ async function resolveTokenImage(token: string): Promise<CachedImage | null> {
   if (!logo) {
     missingUntil.set(key, Date.now() + 60_000);
     return null;
+  }
+
+  const mediaId = mediaIdFromLogo(logo);
+  if (mediaId) {
+    const media = await loadMediaAsset(mediaId);
+    if (!media) {
+      missingUntil.set(key, Date.now() + 60_000);
+      return null;
+    }
+    const stored = { ...media, at: Date.now() };
+    images.set(key, stored);
+    missingUntil.delete(key);
+    return stored;
   }
 
   const file = await pullFirst(candidates(logo));

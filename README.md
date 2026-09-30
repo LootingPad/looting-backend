@@ -109,7 +109,7 @@ Stake / Unstake / Claim. Trade / BUY qualification indexing is gated by
 ## Known limits
 
 - Create launch prepares Pons V2 `launchToken` / `launchAndBuy` (ETH pair only for now; stock quote assets need approved addresses).
-- Create form logos that are local `data:` images are not pinned to IPFS yet — on-chain logo stays empty until an `ipfs://` / `https://` URI is supplied.
+- Launch logos are pinned to public IPFS when `PINATA_JWT` is set (`ipfs://` on-chain for GMGN/Axiom). Without it, logos fall back to `PUBLIC_API_BASE/api/media/:id`.
 - DEX Screener is not integrated (Mobula covers charts + metadata).
 - Uniswap prepare uses the V3 SwapRouter02 path; V4 Universal Router encoding is deferred.
 - Keeper buyback route builder for `FeeSplitter.buyback` waits on the LOOTING token + adapter.
@@ -117,5 +117,6 @@ Stake / Unstake / Claim. Trade / BUY qualification indexing is gated by
 - Leaderboard `rewards` USD is still `$0` until reward USD totals are indexed.
 - Holders are derived from indexed trade flows, not ERC-20 balance snapshots.
 - Lucky Box open is DB + sealed-table hash (no `LootingLuckyBox` contract yet); claim does not move tokens.
-- Creator/holder trading-fee claims wait on `LootingRewardRouter`.
+- Creator trading tax: indexer sweeps curve → harvests FeeEscrow → allocates on RewardRouter.
+  Creators claim via `/api/fees/claim/prepare` (`claimCreator`).
 - Frontend still uses mocks; wire `NEXT_PUBLIC_API_URL` when ready.

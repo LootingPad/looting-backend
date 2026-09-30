@@ -10,6 +10,7 @@ import { normalizeAddress } from "../lib/utils.js";
 import { launchViaLootingEvent, tokenAbi, tokenLaunchedEvent } from "../pons-adapter/abi.js";
 import { publishTrenchPair } from "../pons-adapter/hub.js";
 import { LaunchPrepareError, preparePonsLaunch } from "../pons-adapter/launch.js";
+import { registerLaunchOnChain } from "../services/launch-registry.js";
 
 type TxBundle = {
   to: Address;
@@ -457,6 +458,21 @@ export async function registerPrepareRoutes(app: FastifyInstance) {
       txHash: body.txHash,
       blockNumber: receipt.blockNumber,
       configHash,
+    });
+
+    // On-chain registry snapshot so RewardRouter.allocate can split tax for this token.
+    void registerLaunchOnChain({
+      token: launched.token,
+      curve: launched.curve,
+      creator: payload.wallet,
+      creatorBps: payload.creatorBps ?? 0,
+      luckyBoxBps: payload.luckyBoxBps ?? 0,
+      totalCreatorFeeBps: payload.totalCreatorFeeBps ?? 0,
+      holderShareEnabled: Boolean(payload.holderShareEnabled),
+      quoteAsset: payload.pairToken ?? launched.pairToken,
+      configHash: configHash as Hex,
+    }).catch((err) => {
+      req.log.warn({ err, token: launched.token }, "on-chain LaunchRegistry.register failed");
     });
 
     await prisma.pendingAction.update({

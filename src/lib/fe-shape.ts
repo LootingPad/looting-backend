@@ -43,6 +43,8 @@ export type FeLaunch = {
   creatorTax: number;
   phase: FeLaunchPhase;
   draft?: boolean;
+  /** http(s) / ipfs / LOOTING /api/media/:id URI when known. */
+  logoUrl?: string;
 };
 
 export type FeMarketStats = {
@@ -332,6 +334,7 @@ export function toFeLaunch(
     name: string | null;
     symbol: string | null;
     description: string | null;
+    imageUrl?: string | null;
   },
   market?: MarketEnrichment | null,
   draft?: boolean,
@@ -342,6 +345,7 @@ export function toFeLaunch(
       ? (launch.luckyBoxBps / launch.totalCreatorFeeBps) * 100
       : 0;
   const phase: FeLaunchPhase = launch.phase === "graduated" ? "graduated" : "curve";
+  const logoUrl = (launch.imageUrl ?? "").trim() || undefined;
   const out: FeLaunch = {
     address: launch.token,
     name: launch.name ?? "",
@@ -356,6 +360,7 @@ export function toFeLaunch(
     creatorTax,
     phase,
   };
+  if (logoUrl) out.logoUrl = logoUrl;
   if (draft !== undefined) out.draft = draft;
   return out;
 }

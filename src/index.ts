@@ -20,6 +20,7 @@ import { registerHealthRoutes } from "./modules/health.js";
 import { registerLaunchRoutes } from "./modules/launches.js";
 import { registerLeaderboardRoutes } from "./modules/leaderboard.js";
 import { registerLuckyBoxRoutes } from "./modules/lucky-boxes.js";
+import { registerMediaRoutes } from "./modules/media.js";
 import { registerPrepareRoutes, registerSwapRoutes } from "./modules/prepare.js";
 import { registerSeasonRoutes } from "./modules/seasons.js";
 import {
@@ -35,7 +36,8 @@ import { startTrenchIndexer } from "./pons-adapter/indexer.js";
 async function main() {
   const app = Fastify({
     logger: true,
-    bodyLimit: 1_048_576,
+    // Launch logos arrive as base64 data URLs (~1.5 MB raw → ~2 MB encoded).
+    bodyLimit: 2_500_000,
   });
 
   await app.register(cors, {
@@ -45,6 +47,7 @@ async function main() {
   await registerHealthRoutes(app);
   await registerFeeRoutes(app);
   await registerFeeClaimRoutes(app);
+  await registerMediaRoutes(app);
   await registerLaunchRoutes(app);
   await registerWalletRoutes(app);
   await registerSeasonRoutes(app);

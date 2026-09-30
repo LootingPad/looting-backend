@@ -1,7 +1,7 @@
 import type { FastifyInstance } from "fastify";
 import { prisma } from "../db/prisma.js";
 import { toFeLeaderboardRow } from "../lib/fe-shape.js";
-import { getCurrentSeason } from "../services/xp.js";
+import { ensureActiveSeason } from "../services/xp.js";
 
 export async function registerLeaderboardRoutes(app: FastifyInstance) {
   app.get("/api/leaderboard/current", async (req) => {
@@ -9,10 +9,7 @@ export async function registerLeaderboardRoutes(app: FastifyInstance) {
     const limit = Math.min(Number(q.limit ?? 20), 100);
     const offset = Number(q.offset ?? 0);
 
-    const season = await getCurrentSeason();
-    if (!season) {
-      return { data: [], seasonId: null, you: null, limit, offset };
-    }
+    const season = await ensureActiveSeason();
 
     const rows = await prisma.seasonWalletStat.findMany({
       where: { seasonId: season.id },
@@ -52,6 +49,10 @@ export async function registerLeaderboardRoutes(app: FastifyInstance) {
       you,
       limit,
       offset,
+      message:
+        rows.length === 0
+          ? "Season is live. Rankings fill in as trades earn XP."
+          : undefined,
     };
   });
 }

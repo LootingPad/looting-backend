@@ -213,8 +213,11 @@ export async function preparePonsLaunch(input: PrepareLaunchInput): Promise<Prep
   const feeWallet = getAddress(env.LAUNCH_FEE_WALLET);
   const lootingFee = LOOTING_LAUNCH_FEE_REMAINDER_WEI;
 
+  // Pons creator tax → RewardRouter (forced by LaunchRouter). Buyback off so keeper can sweepFees.
   let feeRecipient: Address = wallet;
-  if (input.creatorFeeRecipient?.trim()) {
+  if (env.LOOTING_REWARD_ROUTER) {
+    feeRecipient = getAddress(env.LOOTING_REWARD_ROUTER);
+  } else if (input.creatorFeeRecipient?.trim()) {
     if (!isAddress(input.creatorFeeRecipient)) {
       throw new LaunchPrepareError("INVALID_RECIPIENT", "Creator wallet needs a full 0x address.");
     }
@@ -299,7 +302,7 @@ export async function preparePonsLaunch(input: PrepareLaunchInput): Promise<Prep
     },
     creatorFeeRecipient: feeRecipient,
     creatorTaxBps,
-    buybackEnabled: input.buybackEnabled !== false,
+    buybackEnabled: false, // recipient sweepFees path — Pons operator not required
     expectedEconomics,
     salt,
   };

@@ -35,6 +35,8 @@ export type TrenchPairResponse = {
   athMcap: string;
   txns: number;
   volume: string;
+  /** Lifetime creator tax paid on-curve (quote units, from CurveBuy/Sell `tax`). */
+  creatorTaxPaid: string;
   bundlers: number;
   holders: number;
   bondingPercentage: number;
@@ -53,6 +55,8 @@ type Fill = {
   wallet: string;
   quote: bigint;
   tokens: bigint;
+  /** Creator tax in quote units (on-chain event). */
+  tax: bigint;
 };
 
 export function toStoredPair(row: TrenchPair): TrenchPairResponse {
@@ -85,6 +89,7 @@ export function toStoredPair(row: TrenchPair): TrenchPairResponse {
     athMcap: "0",
     txns: 0,
     volume: "0",
+    creatorTaxPaid: "0",
     bundlers: 0,
     holders: 0,
     bondingPercentage: 0,
@@ -204,6 +209,7 @@ async function loadFills(
           wallet,
           quote: log.args.quoteIn,
           tokens: log.args.tokensOut,
+          tax: log.args.tax ?? 0n,
         });
       }
       for (const log of batch.sells) {
@@ -221,6 +227,7 @@ async function loadFills(
           wallet,
           quote: log.args.quoteOut,
           tokens: log.args.tokensIn,
+          tax: log.args.tax ?? 0n,
         });
       }
     }
@@ -232,8 +239,10 @@ function tradeStats(fills: Fill[]) {
   const balances = new Map<string, bigint>();
   const buyersByBlock = new Map<string, Set<string>>();
   let volume = 0n;
+  let taxPaid = 0n;
   for (const fill of fills) {
     volume += fill.quote;
+    taxPaid += fill.tax;
     const next = (balances.get(fill.wallet) ?? 0n) + (fill.kind === "buy" ? fill.tokens : -fill.tokens);
     if (next <= 0n) balances.delete(fill.wallet);
     else balances.set(fill.wallet, next);
@@ -249,7 +258,7 @@ function tradeStats(fills: Fill[]) {
     if (buyers.size < 2) continue;
     for (const buyer of buyers) bundlers.add(buyer);
   }
-  return { txns: fills.length, volume, holders: balances.size, bundlers: bundlers.size };
+  return { txns: fills.length, volume, taxPaid, holders: balances.size, bundlers: bundlers.size };
 }
 
 const curveFills = new Map<string, Fill[]>();
@@ -455,6 +464,7 @@ export async function readTrenchPairs(rows: TrenchPair[], opts?: { deadline?: nu
       athMcap: formatAmount(athRaw, quoteDecimals),
       txns: stats.txns,
       volume: formatAmount(stats.volume, quoteDecimals),
+      creatorTaxPaid: formatAmount(stats.taxPaid, quoteDecimals),
       bundlers: stats.bundlers,
       holders: stats.holders,
       bondingPercentage: bonding(raisedRaw, thresholdRaw, phase),
@@ -621,5 +631,21 @@ export async function readTrenchTokenDetail(row: TrenchPair): Promise<{
   const head = lastHead ?? { block: row.blockNumber, at: Date.now() };
   const candles = buildCandles(fills, row, pair, head.block, head.at);
   const ticks = buildTicks(fills, row, pair);
-  return { pair, holders, trades, candles, ticks };
+  let taxPaid = 0n;
+  for (const fill of fills) taxPaid += fill.tax;
+  return {
+    pair: {
+      ...pair,
+      creatorTaxPaid: formatAmount(taxPaid, pair.quoteDecimals),
+      volume: formatAmount(
+        fills.reduce((sum, fill) => sum + fill.quote, 0n),
+        pair.quoteDecimals,
+      ),
+      txns: fills.length,
+    },
+    holders,
+    trades,
+    candles,
+    ticks,
+  };
 }

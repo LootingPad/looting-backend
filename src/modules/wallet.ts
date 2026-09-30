@@ -13,6 +13,7 @@ import {
 } from "../lib/fe-shape.js";
 import { readDevLockClaimable, readPendingRewards } from "../lib/actions.js";
 import { normalizeAddress, xpForQualifiedTrade } from "../lib/utils.js";
+import { reconcileWalletBoxExits } from "../services/trade-rewards.js";
 import { getCurrentSeason } from "../services/xp.js";
 
 export async function registerWalletRoutes(app: FastifyInstance) {
@@ -114,6 +115,9 @@ export async function registerWalletRoutes(app: FastifyInstance) {
       where: { chainId_wallet: { chainId: env.CHAIN_ID, wallet } },
     });
     if (!user) return { data: [] };
+
+    // Catch sells that never hit /api/trade/confirm (or left dust after "sell all").
+    await reconcileWalletBoxExits(user.id, wallet);
 
     const boxes = await prisma.luckyBox.findMany({
       where: { walletId: user.id },

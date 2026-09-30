@@ -96,8 +96,9 @@ export async function prepareCurveTrade(input: {
   const native = pairToken.toLowerCase() === ZERO;
   const wallet = input.wallet;
   const client = getPublicClient();
+  // Approve the curve itself — Multicall3 as msg.sender cannot transferFrom the user on sell.
   const spendToken = input.side === "sell" ? getAddress(row.token) : native ? null : pairToken;
-  const spender = MULTICALL3;
+  const spender = curve;
 
   const results = await client.multicall({
     allowFailure: true,
@@ -131,47 +132,77 @@ export async function prepareCurveTrade(input: {
 
   const [quoteReserve, tokenReserve] = reserves;
   const quoteDecimals = native ? 18 : pairDecimals;
-  const amountIn = parseHuman(input.amount, input.side === "buy" ? quoteDecimals : row.decimals);
+  let amountIn: bigint;
+  if (input.side === "sell" && input.amount.trim().toLowerCase() === "max") {
+    if (!spendToken) throw new TradePrepareError("INVALID_AMOUNT", "Enter an amount above 0.");
+    amountIn = (await client.readContract({
+      address: spendToken,
+      abi: erc20Abi,
+      functionName: "balanceOf",
+      args: [wallet],
+    })) as bigint;
+    if (amountIn <= 0n) throw new TradePrepareError("INVALID_AMOUNT", "No tokens to sell.");
+  } else {
+    amountIn = parseHuman(input.amount, input.side === "buy" ? quoteDecimals : row.decimals);
+  }
   const fee = tradeFeeWei();
   const feeWallet = getAddress(env.TRADE_FEE_WALLET);
-  let swap: { data: Hex; value: bigint };
+  const calls: TradeCall[] = [];
 
   if (input.side === "buy") {
     const tokensOut = quoteBuy(amountIn, feeBps, taxBps, quoteReserve, tokenReserve, realQuote, threshold);
     if (tokensOut <= 0n) throw new TradePrepareError("QUOTE_FAILED", "This buy would not receive tokens.");
-    swap = {
-      data: encodeFunctionData({
-        abi: curveAbi,
-        functionName: "buy",
-        args: [amountIn, applySlippage(tokensOut, input.slippageBps), wallet],
-      }),
-      value: native ? amountIn : 0n,
-    };
+    const swapData = encodeFunctionData({
+      abi: curveAbi,
+      functionName: "buy",
+      args: [amountIn, applySlippage(tokensOut, input.slippageBps), wallet],
+    });
+    if (spendToken && allowance < amountIn) {
+      calls.push({
+        to: spendToken,
+        data: encodeFunctionData({ abi: erc20Abi, functionName: "approve", args: [spender, amountIn] }),
+        value: "0",
+      });
+    }
+    // Native buy: Multicall3 can forward ETH. msg.sender on the curve is Multicall3,
+    // which is fine for buy (recipient is explicit).
+    if (native) {
+      calls.push(bundleTradeAndFee(curve, swapData, amountIn, feeWallet, fee));
+    } else {
+      calls.push({ to: curve, data: swapData, value: "0" });
+      calls.push({ to: feeWallet, data: "0x", value: fee.toString() });
+    }
   } else {
     const quoteOut = quoteSell(amountIn, feeBps, taxBps, quoteReserve, tokenReserve);
     if (native && quoteOut <= fee) {
       throw new TradePrepareError("FEE_EXCEEDS_OUTPUT", "Amount is below the $0.056 fee.");
     }
     if (quoteOut <= 0n) throw new TradePrepareError("QUOTE_FAILED", "This sell would not receive anything.");
-    swap = {
+    // Sell must be wallet → curve so transferFrom(msg.sender) pulls the user's tokens.
+    // Never wrap sell in Multicall3.
+    if (spendToken && allowance < amountIn) {
+      calls.push({
+        to: spendToken,
+        data: encodeFunctionData({
+          abi: erc20Abi,
+          functionName: "approve",
+          // Max approve so later sells skip this step (1 wallet confirm for sell+fee).
+          args: [spender, 2n ** 256n - 1n],
+        }),
+        value: "0",
+      });
+    }
+    calls.push({
+      to: curve,
       data: encodeFunctionData({
         abi: curveAbi,
         functionName: "sell",
         args: [amountIn, applySlippage(quoteOut, input.slippageBps), wallet],
       }),
-      value: 0n,
-    };
-  }
-
-  const calls: TradeCall[] = [];
-  if (spendToken && allowance < amountIn) {
-    calls.push({
-      to: spendToken,
-      data: encodeFunctionData({ abi: erc20Abi, functionName: "approve", args: [spender, amountIn] }),
       value: "0",
     });
+    calls.push({ to: feeWallet, data: "0x", value: fee.toString() });
   }
-  calls.push(bundleTradeAndFee(curve, swap.data, swap.value, feeWallet, fee));
 
   return {
     calls,

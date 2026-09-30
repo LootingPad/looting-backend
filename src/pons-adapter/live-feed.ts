@@ -85,7 +85,9 @@ function logoToHttp(logo?: string | null): string | undefined {
   const raw = logo.trim();
   if (!raw) return undefined;
   if (raw.startsWith("ipfs://")) {
-    return `https://ipfs.io/ipfs/${raw.slice("ipfs://".length).replace(/^ipfs\//, "")}`;
+    const cid = raw.slice("ipfs://".length).replace(/^ipfs\//, "");
+    // Prefer Filebase — public ipfs.io often 429s for scrapers / GMGN-style clients.
+    return `https://ipfs.filebase.io/ipfs/${cid}`;
   }
   if (raw.startsWith("http://") || raw.startsWith("https://")) return raw;
   return undefined;

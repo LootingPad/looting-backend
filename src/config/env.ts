@@ -69,6 +69,17 @@ const envSchema = z.object({
    */
   LOOTING_LAUNCH_ROUTER: addressOrEmpty,
   /**
+   * LootingRewardRouter — Pons creatorFeeRecipient for new LOOTING launches + claimCreator target.
+   * Empty = legacy auto-settle to creator wallet (pre-router launches).
+   */
+  LOOTING_REWARD_ROUTER: addressOrEmpty,
+  /** Optional interim ETH lucky-box module (keeper credits / winner claims). */
+  LOOTING_LUCKY_BOX_ETH_MODULE: addressOrEmpty,
+  /** Pons FeeEscrow — creatorFeeRecipient claimable balances after curve sweepFees. */
+  PONS_FEE_ESCROW: addressOrEmpty,
+  /** Burn-budget pull destination (ops buy+burn). */
+  BURN_WALLET: addressOrEmpty,
+  /**
    * Public origin for absolute media URLs written on-chain.
    * Must be reachable by GMGN / Axiom / explorers — never localhost.
    * Prefer IPFS (PINATA_JWT) when available; this is the HTTPS fallback.

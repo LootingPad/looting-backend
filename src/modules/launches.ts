@@ -65,6 +65,24 @@ function mergeLaunchMarket(primary: FeLaunchCard, market: FeLaunchCard): FeLaunc
     },
   };
 }
+
+/** Prefer DB / trench logo when live feeds omit the image. */
+async function withDbLogo(token: string, card: FeLaunchCard): Promise<FeLaunchCard> {
+  if (card.logoUrl) return card;
+  const [launch, trench] = await Promise.all([
+    prisma.launch.findUnique({
+      where: { chainId_token: { chainId: env.CHAIN_ID, token } },
+      select: { imageUrl: true },
+    }),
+    prisma.trenchPair.findUnique({
+      where: { chainId_token: { chainId: env.CHAIN_ID, token } },
+      select: { logo: true },
+    }),
+  ]);
+  const logoUrl = (launch?.imageUrl || trench?.logo || "").trim();
+  if (!logoUrl) return card;
+  return { ...card, logoUrl };
+}
 async function enrichLaunch(
   launch: {
     id: string;
@@ -76,6 +94,7 @@ async function enrichLaunch(
     name: string | null;
     symbol: string | null;
     description: string | null;
+    imageUrl?: string | null;
     launchedAt: Date | null;
   },
   market?: MarketEnrichment | null,
@@ -284,13 +303,16 @@ export async function registerLaunchRoutes(app: FastifyInstance) {
             try {
               const dex = await getDexExploreLaunch(normalized);
               if (dex) {
-                return { data: mergeLaunchMarket(pons, dex), source: "ponsapi+dex" };
+                return {
+                  data: await withDbLogo(normalized, mergeLaunchMarket(pons, dex)),
+                  source: "ponsapi+dex",
+                };
               }
             } catch (err) {
               req.log.warn({ err }, "dexscreener enrich after ponsapi failed");
             }
           }
-          return { data: pons, source: "ponsapi" };
+          return { data: await withDbLogo(normalized, pons), source: "ponsapi" };
         }
       } catch (err) {
         req.log.warn({ err }, "ponsapi token lookup failed");
@@ -300,7 +322,7 @@ export async function registerLaunchRoutes(app: FastifyInstance) {
     if (env.ENABLE_DEXSCREENER_FEED) {
       try {
         const dex = await getDexExploreLaunch(normalized);
-        if (dex) return { data: dex, source: "dexscreener" };
+        if (dex) return { data: await withDbLogo(normalized, dex), source: "dexscreener" };
       } catch (err) {
         req.log.warn({ err }, "dexscreener token lookup failed");
       }

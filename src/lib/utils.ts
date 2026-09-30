@@ -17,16 +17,25 @@ export function tierFromXp(
   const n = Number(xp);
   if (n >= thresholds.gold) return "gold";
   if (n >= thresholds.silver) return "silver";
+  if (n >= thresholds.bronze) return "bronze";
+  // Below Bronze threshold — still store as bronze (entry / base odds).
   return "bronze";
 }
 
-/** Spec §11: base 10 XP, $5 min notional, volume bands up to 100. */
+/** Spec §11 volume bands (+ product lock). */
 export function xpForQualifiedTrade(usdNotional: number): number {
   if (usdNotional < 5) return 0;
-  if (usdNotional >= 10_000) return 100;
-  if (usdNotional >= 1_000) return 50;
+  if (usdNotional >= 1_000) return 100;
+  if (usdNotional >= 500) return 60;
+  if (usdNotional >= 250) return 40;
   if (usdNotional >= 100) return 25;
+  if (usdNotional >= 25) return 15;
   return 10;
+}
+
+/** Small bump: +1 XP when buy notional ≥ $10 (on top of band). */
+export function xpBuySizeBonus(usdNotional: number): number {
+  return usdNotional >= 10 ? 1 : 0;
 }
 
 export class TtlCache<V> {
