@@ -5,9 +5,13 @@ export const FE_FEES = {
   CREATE_STAKING_FEE_ETH: 0.003,
   CREATOR_FEE_SHARE: 0.8,
   PROTOCOL_BURN_SHARE: 0.2,
-  /** Display FX for ETH↔USD in Analytics / Shell until an oracle is wired. */
-  ETH_USD: 3500,
-  LOOTING_PRICE_USD: 0.0024,
+  /**
+   * Placeholder only — `/api/fees` and analytics overwrite with live spot from
+   * `getEthUsd()`. Never treat this constant as a market price.
+   */
+  ETH_USD: 0,
+  /** $LOOTING CA not live — stay 0 rather than inventing a quote. */
+  LOOTING_PRICE_USD: 0,
   /** Flat platform fee taken on every curve buy and sell. */
   TRADE_FEE_USD: 0.056,
 } as const;
@@ -58,6 +62,14 @@ export type FeMarketStats = {
   boxUsd: number;
 };
 
+export type ExploreStage = "new" | "almost" | "migrate" | "all";
+
+/** Explore / launch-list card shaped for the web app. */
+export type FeLaunchCard = FeLaunch & {
+  stats: FeMarketStats;
+  sparkline?: number[];
+};
+
 export type FeStakingEvent = {
   id: string;
   address: string;
@@ -104,15 +116,41 @@ export type FeLeaderboardRow = {
   wallet: string;
   tier: FeTier;
   xp: number;
+  /** Boxes opened (leaderboard) or trade count (legacy wallet profile). */
   trades: number;
   rewards: string;
+  boxesOpened?: number;
+  rewardsWon?: number;
+  ethWon?: string;
 };
 
 export type FeLuckyBox = {
   id: string;
+  /** Launch token contract address (lowercase). */
   token: string;
+  /** Ticker for display ($A7968). */
+  symbol?: string;
   status: FeBoxStatus;
+  /** Sealed-table outcome label (e.g. "25 LOOTING"). */
   reward?: string;
+  /** ETH budget spent from the launch box pool (wei string). */
+  creditedWei?: string;
+  /** Human ETH amount for the rolled budget, when > 0. */
+  payoutEth?: string;
+  /** USD value of the ETH budget (spot). */
+  payoutUsd?: number;
+  /** Live RewardRouter lucky-box pool for this launch (ETH). */
+  boxPoolEth?: number;
+  /** Live RewardRouter lucky-box pool for this launch (USD). */
+  boxPoolUsd?: number;
+  /** ERC-20 amount received after swap (human units), when known. */
+  prizeAmount?: number;
+  /** Display symbol for the prize asset (NVDA, ETH, …). */
+  prizeSymbol?: string;
+  prizeKind?: "miss" | "eth" | "erc20";
+  prizeToken?: string | null;
+  /** True when winner still needs to claimEthPrize. */
+  claimableOnChain?: boolean;
   tx?: string;
   claimedAt?: string;
 };
@@ -258,10 +296,14 @@ function directionToSide(direction: string): FeTradeSide {
   return "Buy";
 }
 
-function quoteToEth(quoteRaw: Decimalish, usdNotional: number | null | undefined): number {
+function quoteToEth(
+  quoteRaw: Decimalish,
+  usdNotional: number | null | undefined,
+  ethUsd: number,
+): number {
   const quoteUi = rawToUiAmount(quoteRaw);
   if (quoteUi > 0) return quoteUi;
-  if (usdNotional != null && usdNotional > 0) return usdNotional / FE_FEES.ETH_USD;
+  if (usdNotional != null && usdNotional > 0 && ethUsd > 0) return usdNotional / ethUsd;
   return 0;
 }
 
@@ -274,7 +316,7 @@ export function toFeTokenTrade(trade: {
   usdNotional: Decimalish | null;
   timestamp: Date;
   txHash: string;
-}): FeTokenTrade {
+}, ethUsd = 0): FeTokenTrade {
   const usd =
     trade.usdNotional == null ? undefined : Number(String(trade.usdNotional));
   return {
@@ -282,7 +324,7 @@ export function toFeTokenTrade(trade: {
     side: directionToSide(trade.direction),
     address: trade.trader,
     amount: rawToUiAmount(trade.tokenAmount),
-    eth: quoteToEth(trade.quoteAmount, usd),
+    eth: quoteToEth(trade.quoteAmount, usd, ethUsd),
     time: formatRelativeTime(trade.timestamp),
     timestamp: trade.timestamp.toISOString(),
     usd,
@@ -303,6 +345,7 @@ export function toFeWalletTrade(
   },
   launch: FeLaunch,
   xp: number,
+  ethUsd = 0,
 ): FeWalletTrade {
   const usd =
     trade.usdNotional == null ? undefined : Number(String(trade.usdNotional));
@@ -310,7 +353,7 @@ export function toFeWalletTrade(
     id: trade.id,
     side: directionToSide(trade.direction),
     amount: rawToUiAmount(trade.tokenAmount),
-    eth: quoteToEth(trade.quoteAmount, usd),
+    eth: quoteToEth(trade.quoteAmount, usd, ethUsd),
     xp: trade.isQualified ? xp : 0,
     time: formatRelativeTime(trade.timestamp),
     timestamp: trade.timestamp.toISOString(),
@@ -379,21 +422,46 @@ export function toFeMarketStats(
 ): FeMarketStats {
   const volume24h = opts?.volume24h ?? 0;
   const ath = opts?.ath ?? Math.max(launch.marketCap, 0);
-  const boxUsd =
-    launch.marketCap *
-    (launch.creatorTax / 100) *
-    (0.35 + launch.progress / 200) *
-    (launch.luckyShare / 100);
   return {
     age: formatAge(opts?.launchedAt ?? null),
     txns: opts?.txns ?? 0,
     volume24h,
     traders: opts?.traders ?? 0,
     change6h: opts?.change6h ?? 0,
-    change24h: opts?.change24h ?? launch.change1h * 2.4,
+    change24h: opts?.change24h ?? 0,
     ath,
-    boxUsd,
+    boxUsd: luckyBoxUsdFromLaunch(launch, volume24h),
   };
+}
+
+/** Prefer volume×tax (real accrual). No mcap invent — return 0 until volume is indexed. */
+export function feePoolsFromVolumeUsd(
+  volumeUsd: number,
+  creatorTaxPercent: number,
+  luckySharePercent: number,
+  creatorFeeShare = FE_FEES.CREATOR_FEE_SHARE,
+) {
+  const tax = Math.max(0, creatorTaxPercent) / 100;
+  const accruedUsd = Math.max(0, volumeUsd) * tax;
+  const share = Math.min(1, Math.max(0, creatorFeeShare));
+  const creatorSideUsd = accruedUsd * share;
+  const lucky = Math.min(100, Math.max(0, luckySharePercent)) / 100;
+  return {
+    accruedUsd,
+    burnUsd: accruedUsd * (1 - share),
+    creatorUsd: creatorSideUsd * (1 - lucky),
+    poolUsd: creatorSideUsd * lucky,
+  };
+}
+
+export function luckyBoxUsdFromLaunch(launch: FeLaunch, volumeUsd = 0): number {
+  if (!(volumeUsd > 0) || !(launch.creatorTax > 0)) return 0;
+  return feePoolsFromVolumeUsd(volumeUsd, launch.creatorTax, launch.luckyShare).poolUsd;
+}
+
+export function accruedFeeUsdFromLaunch(launch: FeLaunch, volumeUsd = 0): number {
+  if (!(volumeUsd > 0) || !(launch.creatorTax > 0)) return 0;
+  return feePoolsFromVolumeUsd(volumeUsd, launch.creatorTax, launch.luckyShare).accruedUsd;
 }
 
 export function toFeStakingEvent(
@@ -497,6 +565,10 @@ export function toFeLeaderboardRow(row: {
   xp: Decimalish;
   tradeCount: number;
   rewardsUsd?: number;
+  boxesOpened?: number;
+  rewardsWon?: number;
+  ethWon?: string;
+  rewardsLabel?: string;
 }): FeLeaderboardRow {
   const xp =
     typeof row.xp === "number"
@@ -504,50 +576,128 @@ export function toFeLeaderboardRow(row: {
       : typeof row.xp === "bigint"
         ? Number(row.xp)
         : Number(String(row.xp));
+  const boxesOpened = row.boxesOpened ?? row.tradeCount;
+  const rewardsWon = row.rewardsWon ?? 0;
   return {
     wallet: row.wallet,
     tier: tierToFe(row.tier),
     xp,
-    trades: row.tradeCount,
-    rewards: formatRewardsUsd(row.rewardsUsd ?? 0),
+    trades: boxesOpened,
+    rewards: row.rewardsLabel ?? formatRewardsUsd(row.rewardsUsd ?? 0),
+    boxesOpened,
+    rewardsWon,
+    ethWon: row.ethWon,
   };
+}
+
+function formatPayoutEth(amount: Decimalish | null | undefined): string | undefined {
+  if (amount == null) return undefined;
+  const eth = rawToUiAmount(amount);
+  if (!Number.isFinite(eth) || eth <= 0) return undefined;
+  if (eth < 0.000001) return `${eth.toExponential(2)} ETH`;
+  const fixed = eth >= 0.01 ? eth.toFixed(4) : eth.toFixed(6);
+  return `${fixed.replace(/\.?0+$/, "")} ETH`;
+}
+
+function formatTokenRaw(raw: Decimalish, decimals: number): number {
+  const s = String(raw);
+  try {
+    const v = BigInt(s.split(".")[0] || "0");
+    const scale = 10n ** BigInt(Math.max(0, Math.min(36, decimals)));
+    return Number(v) / Number(scale);
+  } catch {
+    return 0;
+  }
+}
+
+function inferPrizeKind(token: string | null | undefined, rewardType?: string): FeLuckyBox["prizeKind"] {
+  if (!token && rewardType && /no reward|miss|empty|—/i.test(rewardType)) return "miss";
+  if (!token) return "miss";
+  if (token === "ETH" || token.toUpperCase() === "ETH") return "eth";
+  if (token.startsWith("0x")) return "erc20";
+  return "eth";
 }
 
 export function toFeLuckyBox(
   box: {
     boxId: string;
     status: string;
+    openedAt?: Date | null;
     claimedAt: Date | null;
     rewards?: Array<{
       amount: Decimalish | null;
       token: string | null;
       swapTxHash: string | null;
+      swapOutput?: Decimalish | null;
       status: string;
       rewardType?: string;
     }>;
   },
-  tokenSymbol: string,
+  launch: { token?: string | null; symbol?: string | null } | string,
+  opts?: {
+    ethUsd?: number;
+    prizeLabel?: string | null;
+    prizeDecimals?: number;
+    boxPoolEth?: number;
+    boxPoolUsd?: number;
+  },
 ): FeLuckyBox {
-  const claimedReward = box.rewards?.find((r) => r.status === "claimed" || r.swapTxHash);
+  const rewards = box.rewards ?? [];
+  const pending = rewards.find((r) => r.status === "pending" || r.status === "swapping");
+  const settled = rewards.find((r) => r.status === "claimed" || r.status === "failed");
+  const row = pending ?? settled ?? rewards[rewards.length - 1];
+
+  let status = boxStatusToFe(box.status);
+  if (pending) status = "opened";
+  else if (box.openedAt || box.status === "claimed") status = "claimed";
+
+  const tokenAddress =
+    typeof launch === "string" ? "" : (launch.token ?? "").toLowerCase();
+  const symbol =
+    typeof launch === "string" ? launch : (launch.symbol ?? "").trim() || tokenAddress.slice(0, 6);
+
   const out: FeLuckyBox = {
     id: box.boxId,
-    token: tokenSymbol,
-    status: boxStatusToFe(box.status),
+    // Prefer address so Terminal can match launch.address; fall back to symbol for older callers.
+    token: tokenAddress || symbol,
+    symbol: symbol || undefined,
+    status,
   };
-  if (claimedReward?.amount != null) {
-    const amt = rawToUiAmount(claimedReward.amount);
-    const sym = claimedReward.token ? claimedReward.token.slice(0, 6) : tokenSymbol;
-    out.reward = `${amt} ${sym}`;
-  } else if (
-    claimedReward?.rewardType &&
-    claimedReward.rewardType !== "none" &&
-    claimedReward.rewardType !== "table" &&
-    claimedReward.rewardType !== "pending"
-  ) {
-    out.reward = claimedReward.rewardType;
+
+  if (row?.rewardType && row.rewardType !== "none" && row.rewardType !== "table") {
+    out.reward = row.rewardType;
   }
-  if (claimedReward?.swapTxHash) out.tx = claimedReward.swapTxHash;
+
+  const ethUsd = opts?.ethUsd && opts.ethUsd > 0 ? opts.ethUsd : 0;
+  if (row?.amount != null) {
+    const wei = String(row.amount);
+    if (wei !== "0") {
+      out.creditedWei = wei;
+      out.payoutEth = formatPayoutEth(row.amount);
+      const eth = rawToUiAmount(row.amount);
+      if (ethUsd > 0 && eth > 0) out.payoutUsd = eth * ethUsd;
+    }
+  }
+
+  out.prizeKind = inferPrizeKind(row?.token, row?.rewardType);
+  out.prizeToken = row?.token ?? null;
+
+  if (out.prizeKind === "eth") {
+    out.prizeSymbol = "ETH";
+    if (row?.amount != null) out.prizeAmount = rawToUiAmount(row.amount);
+  } else if (out.prizeKind === "erc20") {
+    out.prizeSymbol = opts?.prizeLabel?.trim() || out.reward || "TOKEN";
+    if (row?.swapOutput != null) {
+      out.prizeAmount = formatTokenRaw(row.swapOutput, opts?.prizeDecimals ?? 18);
+    }
+  }
+
+  out.claimableOnChain = Boolean(pending && (row?.token === "ETH" || out.prizeKind === "eth"));
+
+  if (row?.swapTxHash) out.tx = row.swapTxHash;
   if (box.claimedAt) out.claimedAt = box.claimedAt.toISOString();
+  if (opts?.boxPoolEth != null && Number.isFinite(opts.boxPoolEth)) out.boxPoolEth = opts.boxPoolEth;
+  if (opts?.boxPoolUsd != null && Number.isFinite(opts.boxPoolUsd)) out.boxPoolUsd = opts.boxPoolUsd;
   return out;
 }
 

@@ -1,15 +1,14 @@
 import { createHash } from "node:crypto";
 import type { Hex, Log, TransactionReceipt } from "viem";
 import { decodeEventLog, formatEther } from "viem";
+import { getEthUsd } from "../clients/eth-price.js";
 import { env } from "../config/env.js";
 import { prisma } from "../db/prisma.js";
-import { FE_FEES } from "../lib/fe-shape.js";
 import { ensureWallet, normalizeAddress, tierFromXp, xpBuySizeBonus, xpForQualifiedTrade } from "../lib/utils.js";
 import { curveBuyEvent, curveSellEvent } from "../pons-adapter/abi.js";
 import { allocateTaxToLaunch } from "./reward-router.js";
 import { awardXp, ensureActiveSeason } from "./xp.js";
 
-const ZERO = "0x0000000000000000000000000000000000000000";
 /** Treat residual dust after a "sell all" as a full exit (UI rounds human amounts). */
 const EXIT_DUST_WEI = 10n ** 15n;
 
@@ -29,14 +28,10 @@ function boxIdFor(tradeId: string, wallet: string, token: string): string {
     .slice(0, 32);
 }
 
-function usdFromQuote(quoteWei: bigint, pairToken: string | null | undefined): number {
+function usdFromQuote(quoteWei: bigint, ethUsd: number): number {
   const eth = Number(formatEther(quoteWei));
-  if (!Number.isFinite(eth) || eth <= 0) return 0;
-  // Native ETH / WETH-style pair — use configured FX. Other quotes stay quote-native for now.
-  if (!pairToken || pairToken === ZERO) {
-    return eth * FE_FEES.ETH_USD;
-  }
-  return eth * FE_FEES.ETH_USD;
+  if (!Number.isFinite(eth) || eth <= 0 || !(ethUsd > 0)) return 0;
+  return eth * ethUsd;
 }
 
 async function walletTokenBalanceRaw(launchId: string, wallet: string): Promise<bigint> {
@@ -190,7 +185,8 @@ export async function ingestCurveFill(input: {
   }
 
   const user = await ensureWallet(env.CHAIN_ID, trader);
-  const usd = usdFromQuote(input.quoteAmount, launch.quoteAsset ?? launch.pair);
+  const ethUsd = await getEthUsd();
+  const usd = usdFromQuote(input.quoteAmount, ethUsd);
   let xp = input.direction === "buy" ? xpForQualifiedTrade(usd) : 0;
   if (input.direction === "buy" && xp > 0) {
     xp += xpBuySizeBonus(usd);

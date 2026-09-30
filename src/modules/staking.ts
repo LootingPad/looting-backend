@@ -1,8 +1,8 @@
 import type { FastifyInstance } from "fastify";
-import { getTokenMarketSnapshot } from "../clients/mobula.js";
 import { env } from "../config/env.js";
 import { prisma } from "../db/prisma.js";
 import { toFeStakingEvent } from "../lib/fe-shape.js";
+import { getPonsapiExploreLaunch, ponsapiLiveEnabled } from "../pons-adapter/live-feed.js";
 
 export async function registerStakingRoutes(app: FastifyInstance) {
   app.get("/api/staking/events", async (req) => {
@@ -23,12 +23,23 @@ export async function registerStakingRoutes(app: FastifyInstance) {
 
     const uniqueTokens = [...new Set(vaults.map((v) => v.stakeToken))];
     const marketByToken = new Map<string, { marketCap?: number; volume24h?: number }>();
-    await Promise.all(
-      uniqueTokens.map(async (token) => {
-        const snap = await getTokenMarketSnapshot(token);
-        if (snap) marketByToken.set(token, snap);
-      }),
-    );
+    if (ponsapiLiveEnabled()) {
+      await Promise.all(
+        uniqueTokens.map(async (token) => {
+          try {
+            const card = await getPonsapiExploreLaunch(token);
+            if (card) {
+              marketByToken.set(token, {
+                marketCap: card.marketCap,
+                volume24h: card.stats.volume24h,
+              });
+            }
+          } catch {
+            /* leave empty — UI shows 0 */
+          }
+        }),
+      );
+    }
 
     return {
       data: vaults.map((v) => {
@@ -56,13 +67,23 @@ export async function registerStakingRoutes(app: FastifyInstance) {
     });
     if (!vault) return reply.code(404).send({ error: "NOT_FOUND" });
 
-    const market = await getTokenMarketSnapshot(vault.stakeToken);
+    let marketCap: number | undefined;
+    let volume24h: number | undefined;
+    if (ponsapiLiveEnabled()) {
+      try {
+        const card = await getPonsapiExploreLaunch(vault.stakeToken);
+        marketCap = card?.marketCap;
+        volume24h = card?.stats.volume24h;
+      } catch {
+        /* empty */
+      }
+    }
     return {
       data: toFeStakingEvent(vault, {
         name: vault.launch?.name,
         symbol: vault.launch?.symbol,
-        marketCap: market?.marketCap,
-        volume24h: market?.volume24h,
+        marketCap,
+        volume24h,
       }),
     };
   });

@@ -4,11 +4,13 @@
  */
 import WebSocket from "ws";
 import { env } from "../config/env.js";
+import { prisma } from "../db/prisma.js";
 import {
   toFeMarketStats,
+  type ExploreStage,
   type FeLaunch,
+  type FeLaunchCard,
 } from "../lib/fe-shape.js";
-import type { ExploreStage, FeLaunchCard } from "../clients/dexscreener.js";
 import { TtlCache } from "../lib/utils.js";
 
 const DEFAULT_BASE = "https://api.ponsapi.dev";
@@ -22,7 +24,9 @@ type PonsapiListToken = {
   name?: string;
   symbol?: string;
   priceUsd?: number;
+  priceEth?: number;
   mcapUsd?: number;
+  graduated?: boolean;
 };
 
 type PonsapiDetail = {
@@ -34,12 +38,14 @@ type PonsapiDetail = {
   deployer?: string;
   factory?: string;
   priceUsd?: number;
+  priceEth?: number;
   mcapUsd?: number;
   fdvUsd?: number;
   graduated?: boolean;
   readyToGraduate?: boolean;
   graduationThreshold?: number;
   graduationProgress?: number;
+  creatorSharePercent?: number;
   reserves?: { quote?: number; realQuote?: number; phantomQuote?: number };
   fees?: { creatorTaxBps?: number };
   launchedAt?: string;
@@ -119,7 +125,7 @@ export function ponsProgress(detail: PonsapiDetail): number {
   return 0;
 }
 
-function tradesToStats(trades: PonsapiTrade[], priceUsd: number) {
+function tradesToStats(trades: PonsapiTrade[], _priceUsd: number) {
   const chronological = [...trades].reverse();
   let volume = 0;
   const prices: number[] = [];
@@ -146,19 +152,33 @@ function tradesToStats(trades: PonsapiTrade[], priceUsd: number) {
     traders: traders.size,
     change1h,
     change24h,
-    sparkline: prices.length >= 2 ? prices : priceUsd > 0 ? [priceUsd, priceUsd] : undefined,
+    sparkline: prices.length >= 2 ? prices : undefined,
   };
 }
 
-function detailToCard(detail: PonsapiDetail, trades: PonsapiTrade[]): FeLaunchCard {
+async function detailToCard(detail: PonsapiDetail, trades: PonsapiTrade[]): Promise<FeLaunchCard> {
   const graduated = Boolean(detail.graduated);
   const progress = ponsProgress(detail);
   const marketCap = Number(detail.mcapUsd ?? 0) || 0;
   const priceUsd = Number(detail.priceUsd ?? 0) || 0;
   const launchedAt = detail.launchedAt ? new Date(detail.launchedAt) : new Date();
   const logoUrl = logoToHttp(detail.logo);
-  const creatorTax = detail.fees?.creatorTaxBps != null ? detail.fees.creatorTaxBps / 100 : 1;
+  const creatorTax = detail.fees?.creatorTaxBps != null ? detail.fees.creatorTaxBps / 100 : 0;
   const fromTrades = tradesToStats(trades, priceUsd);
+
+  // Prefer Launch registry split when we indexed this token; else leave luckyShare at 0.
+  let luckyShare = 0;
+  try {
+    const row = await prisma.launch.findUnique({
+      where: { chainId_token: { chainId: env.CHAIN_ID, token: (detail.token || "").toLowerCase() } },
+      select: { luckyBoxBps: true, totalCreatorFeeBps: true },
+    });
+    if (row && row.totalCreatorFeeBps > 0) {
+      luckyShare = (row.luckyBoxBps / row.totalCreatorFeeBps) * 100;
+    }
+  } catch {
+    /* registry miss stays 0 */
+  }
 
   const launch: FeLaunch = {
     address: (detail.token || "").toLowerCase(),
@@ -170,7 +190,7 @@ function detailToCard(detail: PonsapiDetail, trades: PonsapiTrade[]): FeLaunchCa
     progress,
     change1h: fromTrades.change1h,
     priceUsd,
-    luckyShare: 20,
+    luckyShare,
     creatorTax,
     phase: graduated ? "graduated" : "curve",
   };
@@ -185,8 +205,7 @@ function detailToCard(detail: PonsapiDetail, trades: PonsapiTrade[]): FeLaunchCa
     ath: Math.max(marketCap, Number(detail.fdvUsd) || 0),
   });
   stats.age = formatAge(launchedAt);
-  stats.boxUsd =
-    marketCap * (creatorTax / 100) * (0.35 + progress / 200) * (launch.luckyShare / 100);
+  // boxUsd already set by toFeMarketStats (volume-first)
 
   return {
     ...launch,
@@ -302,7 +321,7 @@ async function hydrateToken(token: string, seed?: Partial<PonsapiDetail>): Promi
   }
 
   const trades = await getTrades(token);
-  return detailToCard(detail, trades);
+  return await detailToCard(detail, trades);
 }
 
 async function listHttpTokens(): Promise<PonsapiListToken[]> {
@@ -424,7 +443,9 @@ export async function listPonsapiExploreLaunches(opts: {
   // Refresh HTTP list into buffer (WS also pushes)
   try {
     const listed = await listHttpTokens();
-    const missing = listed.filter((t) => !liveByToken.has(t.token.toLowerCase())).slice(0, 20);
+    const missing = listed
+      .filter((t) => !liveByToken.has(t.token.toLowerCase()))
+      .slice(0, stage === "migrate" ? 40 : 20);
     await Promise.all(
       missing.map(async (row) => {
         const card = await hydrateToken(row.token, {
@@ -433,7 +454,9 @@ export async function listPonsapiExploreLaunches(opts: {
           symbol: row.symbol,
           deployer: row.deployer,
           priceUsd: row.priceUsd,
+          priceEth: row.priceEth,
           mcapUsd: row.mcapUsd,
+          graduated: row.graduated,
         });
         if (card) upsertLive(card);
       }),
@@ -442,7 +465,10 @@ export async function listPonsapiExploreLaunches(opts: {
     /* keep live buffer */
   }
 
-  let cards = getLiveNewPairCards().filter((c) => c.phase !== "graduated");
+  let cards =
+    stage === "migrate"
+      ? [...liveByToken.values()].filter((c) => c.phase === "graduated")
+      : getLiveNewPairCards().filter((c) => c.phase !== "graduated");
 
   if (stage === "almost") {
     const mid = cards.filter((c) => c.progress >= 50 && c.progress < 100);
@@ -450,11 +476,10 @@ export async function listPonsapiExploreLaunches(opts: {
       mid.length >= 5
         ? mid.sort((a, b) => b.progress - a.progress || b.marketCap - a.marketCap)
         : [...cards].sort((a, b) => b.progress - a.progress || b.marketCap - a.marketCap);
+  } else if (stage === "migrate") {
+    cards = [...cards].sort((a, b) => b.marketCap - a.marketCap || ageHours(a.stats.age) - ageHours(b.stats.age));
   } else if (stage === "new" || stage === "all") {
     cards = [...cards].sort((a, b) => ageHours(a.stats.age) - ageHours(b.stats.age));
-  } else {
-    // migrate not served here
-    cards = [];
   }
 
   return {

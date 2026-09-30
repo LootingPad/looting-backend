@@ -8,7 +8,7 @@ import { prisma } from "../db/prisma.js";
 import { tokenAbi } from "../pons-adapter/abi.js";
 import { addTrenchClient, addTrenchPhaseClient, rememberPair } from "../pons-adapter/hub.js";
 import { loadTokenImage } from "../pons-adapter/images.js";
-import { readTrenchPairs, readTrenchTokenDetail, toStoredPair, type TrenchPairResponse } from "../pons-adapter/live.js";
+import { readTrenchPairs, readTrenchTokenDetail, toStoredPair, attachLuckyShare, type TrenchPairResponse } from "../pons-adapter/live.js";
 import { toBoardPair } from "../pons-adapter/stages.js";
 
 const liveCache = new Map<string, { at: number; pairs: TrenchPairResponse[] }>();
@@ -130,7 +130,7 @@ export async function registerTrenchRoutes(app: FastifyInstance) {
       orderBy: [{ blockNumber: "desc" }, { logIndex: "desc" }],
       take: limit,
     });
-    socket.send(JSON.stringify({ type: "snapshot", pairs: rows.map(toStoredPair) }));
+    socket.send(JSON.stringify({ type: "snapshot", pairs: await attachLuckyShare(rows.map(toStoredPair)) }));
     addTrenchClient(socket);
   });
 
@@ -154,13 +154,18 @@ export async function registerTrenchRoutes(app: FastifyInstance) {
         take: limit,
       }),
     ]);
+    const [newPairs, almostPairs, migratedPairs] = await Promise.all([
+      attachLuckyShare(fresh.map(toBoardPair)),
+      attachLuckyShare(almost.map(toBoardPair)),
+      attachLuckyShare(migrated.map(toBoardPair)),
+    ]);
     socket.send(
       JSON.stringify({
         type: "snapshot",
         phases: {
-          new: fresh.map(toBoardPair),
-          "almost migrated": almost.map(toBoardPair),
-          migrated: migrated.map(toBoardPair),
+          new: newPairs,
+          "almost migrated": almostPairs,
+          migrated: migratedPairs,
         },
       }),
     );

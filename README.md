@@ -94,6 +94,9 @@ Activate a season (once):
 | POST | `/api/fees/claim/prepare` → `503 FEE_ROUTER_NOT_DEPLOYED` |
 | POST | `/api/swap/quote`, `/api/swap/prepare` |
 | POST | `/api/admin/season`, `/reward-table`, `/launch/:token/pause-rewards`, `/token/approve` |
+| GET | `/api/admin/seasons`, `/reward-tables`, `/tokens`, `/launches`, `/config` |
+| PUT | `/api/admin/config` |
+| GET | `/api/looting-token` |
 
 Admin routes require `Authorization: Bearer $ADMIN_API_TOKEN`.
 
@@ -115,8 +118,8 @@ Stake / Unstake / Claim. Trade / BUY qualification indexing is gated by
 - Keeper buyback route builder for `FeeSplitter.buyback` waits on the LOOTING token + adapter.
 - Redis is deferred until Railway; caches are in-process TTL maps.
 - Leaderboard `rewards` USD is still `$0` until reward USD totals are indexed.
-- Holders are derived from indexed trade flows, not ERC-20 balance snapshots.
-- Lucky Box open is DB + sealed-table hash (no `LootingLuckyBox` contract yet); claim does not move tokens.
+- Holders for trench detail are derived from curve fills (chronological avg-cost); tiny dust / fill lag can still diverge from `balanceOf` until the next poll. FE Terminal also reads `balanceOf` for Open position.
+- Lucky Box open uses a sealed reward table + solvency roll: `amountWei` is random within system share of `fairShare = luckyBoxClaimable / unopenedBoxes`. ETH prizes credit `LootingLuckyBoxEthModule` for user claim. ERC-20: **prefer the prize token** (quote before pull). If the rolled budget is dust (`< 0.0001 ETH`), Uniswap has no route, or the swap reverts after pull, pay **ETH** instead (claimable / sent) so the box still opens. Open/claim FE timeout is 90s. See `DEPLOY_NOTES_2026-10-01.md` for the full ship checklist.
 - Creator trading tax: indexer sweeps curve → harvests FeeEscrow → allocates on RewardRouter.
   Creators claim via `/api/fees/claim/prepare` (`claimCreator`).
 - Frontend still uses mocks; wire `NEXT_PUBLIC_API_URL` when ready.

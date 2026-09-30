@@ -1,8 +1,15 @@
 import type { TrenchPair } from "@prisma/client";
-import type { Address } from "viem";
+import { formatEther, parseAbi, type Address } from "viem";
+import { getEthUsd, getEthUsdCached } from "../clients/eth-price.js";
 import { getPublicClient } from "../clients/rpc.js";
 import { env } from "../config/env.js";
+import { prisma } from "../db/prisma.js";
 import { curveAbi, curveBuyEvent, curveSellEvent, factoryAbi, phaseName } from "./abi.js";
+
+const rewardRouterViewAbi = parseAbi([
+  "function creatorClaimable(address token) view returns (uint256)",
+  "function luckyBoxClaimable(address token) view returns (uint256)",
+]);
 
 const ZERO = "0x0000000000000000000000000000000000000000";
 
@@ -37,6 +44,17 @@ export type TrenchPairResponse = {
   volume: string;
   /** Lifetime creator tax paid on-curve (quote units, from CurveBuy/Sell `tax`). */
   creatorTaxPaid: string;
+  /**
+   * Live RewardRouter balances (ETH strings) after sweep/harvest/allocate.
+   * Prefer these for Terminal fee cards when present.
+   */
+  creatorClaimableEth?: string;
+  luckyBoxClaimableEth?: string;
+  /** From Launch registry when known — percent of creator tax routed to Lucky Boxes. */
+  luckyShare?: number;
+  luckyBoxBps?: number;
+  /** On-chain fill prices (USD) for Explore sparkline — never synthesized. */
+  sparkline?: number[];
   bundlers: number;
   holders: number;
   bondingPercentage: number;
@@ -240,18 +258,26 @@ function tradeStats(fills: Fill[]) {
   const buyersByBlock = new Map<string, Set<string>>();
   let volume = 0n;
   let taxPaid = 0n;
-  for (const fill of fills) {
+  // Apply chronologically so a sell never lands before its buys in this loop.
+  const ordered = [...fills].sort((a, b) => {
+    if (a.blockNumber !== b.blockNumber) return a.blockNumber < b.blockNumber ? -1 : 1;
+    return a.logIndex - b.logIndex;
+  });
+  for (const fill of ordered) {
     volume += fill.quote;
     taxPaid += fill.tax;
     const next = (balances.get(fill.wallet) ?? 0n) + (fill.kind === "buy" ? fill.tokens : -fill.tokens);
-    if (next <= 0n) balances.delete(fill.wallet);
-    else balances.set(fill.wallet, next);
+    // Keep running totals even if briefly negative (unsorted callers / partial history).
+    balances.set(fill.wallet, next);
     if (fill.kind === "buy") {
       const key = fill.blockNumber.toString();
       const buyers = buyersByBlock.get(key) ?? new Set<string>();
       buyers.add(fill.wallet);
       buyersByBlock.set(key, buyers);
     }
+  }
+  for (const [wallet, amount] of balances) {
+    if (amount <= 0n) balances.delete(wallet);
   }
   const bundlers = new Set<string>();
   for (const buyers of buyersByBlock.values()) {
@@ -312,6 +338,8 @@ let lastHead: { block: bigint; at: number } | null = null;
 
 export async function readTrenchPairs(rows: TrenchPair[], opts?: { deadline?: number }): Promise<TrenchPairResponse[]> {
   if (rows.length === 0) return [];
+  await getEthUsd().catch(() => 0);
+  const ethUsd = getEthUsdCached();
   const client = getPublicClient();
   const head = await client.getBlockNumber();
   lastHead = { block: head, at: Date.now() };
@@ -384,7 +412,7 @@ export async function readTrenchPairs(rows: TrenchPair[], opts?: { deadline?: nu
     fillsByCurve.set(fill.curve, list);
   }
 
-  return rows.map((row, index) => {
+  const out = rows.map((row, index) => {
     const base = index * 7;
     const launched = curveRows[base];
     const fee = curveRows[base + 1];
@@ -435,6 +463,14 @@ export async function readTrenchPairs(rows: TrenchPair[], opts?: { deadline?: nu
     void feeBps;
     const curveTaxBps = creator?.status === "success" ? Number(creator.result) : creatorTaxBps;
 
+    const fillPricesEth = curveFills
+      .map((fill) => tradePrice(fill.quote, fill.tokens, row.decimals, quoteDecimals))
+      .filter((p) => p > 0);
+    const sparkline =
+      ethUsd > 0 && fillPricesEth.length >= 2
+        ? fillPricesEth.slice(-32).map((p) => p * ethUsd)
+        : undefined;
+
     return {
       token: row.token,
       name: row.name,
@@ -473,11 +509,79 @@ export async function readTrenchPairs(rows: TrenchPair[], opts?: { deadline?: nu
       blockNumber: row.blockNumber.toString(),
       logIndex: row.logIndex,
       launchedAt: row.launchedAt.toISOString(),
+      ...(sparkline ? { sparkline } : {}),
+    };
+  });
+  return attachRewardClaimables(await attachLuckyShare(out));
+}
+
+/** Live creator / lucky-box claimable ETH from LootingRewardRouter. */
+export async function attachRewardClaimables(
+  pairs: TrenchPairResponse[],
+): Promise<TrenchPairResponse[]> {
+  if (pairs.length === 0 || !env.LOOTING_REWARD_ROUTER) return pairs;
+  try {
+    const client = getPublicClient();
+    const router = env.LOOTING_REWARD_ROUTER as Address;
+    const rows = await client.multicall({
+      allowFailure: true,
+      contracts: pairs.flatMap((pair) => {
+        const token = pair.token as Address;
+        return [
+          {
+            address: router,
+            abi: rewardRouterViewAbi,
+            functionName: "creatorClaimable" as const,
+            args: [token] as const,
+          },
+          {
+            address: router,
+            abi: rewardRouterViewAbi,
+            functionName: "luckyBoxClaimable" as const,
+            args: [token] as const,
+          },
+        ];
+      }),
+    });
+    return pairs.map((pair, i) => {
+      const creator = rows[i * 2];
+      const box = rows[i * 2 + 1];
+      const creatorWei =
+        creator?.status === "success" && typeof creator.result === "bigint" ? creator.result : 0n;
+      const boxWei = box?.status === "success" && typeof box.result === "bigint" ? box.result : 0n;
+      return {
+        ...pair,
+        // Always attach (including "0") so FE does not fall back to volume estimates.
+        creatorClaimableEth: formatEther(creatorWei),
+        luckyBoxClaimableEth: formatEther(boxWei),
+      };
+    });
+  } catch {
+    return pairs;
+  }
+}
+
+/** Overlay Launch-registry lucky box split when the token was prepared through LOOTING. */
+export async function attachLuckyShare(pairs: TrenchPairResponse[]): Promise<TrenchPairResponse[]> {
+  if (pairs.length === 0) return pairs;
+  const tokens = [...new Set(pairs.map((p) => p.token.toLowerCase()))];
+  const rows = await prisma.launch.findMany({
+    where: { chainId: env.CHAIN_ID, token: { in: tokens } },
+    select: { token: true, luckyBoxBps: true, totalCreatorFeeBps: true },
+  });
+  const byToken = new Map(rows.map((r) => [r.token.toLowerCase(), r]));
+  return pairs.map((pair) => {
+    const row = byToken.get(pair.token.toLowerCase());
+    if (!row || row.totalCreatorFeeBps <= 0) return pair;
+    return {
+      ...pair,
+      luckyBoxBps: row.luckyBoxBps,
+      luckyShare: (row.luckyBoxBps / row.totalCreatorFeeBps) * 100,
     };
   });
 }
 
-export type TrenchHolderRow = { address: string; amount: string; share: number };
+export type TrenchHolderRow = { address: string; amount: string; share: number; entryQuote?: string };
 export type TrenchTradeRow = {
   id: string;
   side: "buy" | "sell";
@@ -599,20 +703,56 @@ export async function readTrenchTokenDetail(row: TrenchPair): Promise<{
   ]);
   const pair = pairs[0] ?? toStoredPair(row);
   const balances = new Map<string, bigint>();
-  for (const fill of fills) {
-    const next = (balances.get(fill.wallet) ?? 0n) + (fill.kind === "buy" ? fill.tokens : -fill.tokens);
-    if (next <= 0n) balances.delete(fill.wallet);
-    else balances.set(fill.wallet, next);
+  const costQuote = new Map<string, bigint>();
+  const ordered = [...fills].sort((a, b) => {
+    if (a.blockNumber !== b.blockNumber) return a.blockNumber < b.blockNumber ? -1 : 1;
+    return a.logIndex - b.logIndex;
+  });
+  for (const fill of ordered) {
+    const bal = balances.get(fill.wallet) ?? 0n;
+    const cost = costQuote.get(fill.wallet) ?? 0n;
+    if (fill.kind === "buy") {
+      balances.set(fill.wallet, bal + fill.tokens);
+      costQuote.set(fill.wallet, cost + fill.quote);
+      continue;
+    }
+    if (bal <= 0n) {
+      balances.set(fill.wallet, 0n);
+      costQuote.set(fill.wallet, 0n);
+      continue;
+    }
+    const sold = fill.tokens > bal ? bal : fill.tokens;
+    const nextBal = bal - sold;
+    const nextCost = nextBal === 0n ? 0n : (cost * nextBal) / bal;
+    balances.set(fill.wallet, nextBal);
+    costQuote.set(fill.wallet, nextCost);
+  }
+  for (const [wallet, amount] of balances) {
+    if (amount <= 0n) {
+      balances.delete(wallet);
+      costQuote.delete(wallet);
+    }
   }
   const supply = BigInt(row.totalSupply);
+  const quoteDecimals = pair.quoteDecimals ?? 18;
   const holders = [...balances.entries()]
     .sort((a, b) => (a[1] === b[1] ? 0 : a[1] > b[1] ? -1 : 1))
     .slice(0, 50)
-    .map(([address, amount]) => ({
-      address,
-      amount: formatAmount(amount, row.decimals),
-      share: supply > 0n ? Number((amount * 10_000n) / supply) / 100 : 0,
-    }));
+    .map(([address, amount]) => {
+      const cost = costQuote.get(address) ?? 0n;
+      const tokensHuman = Number(formatAmount(amount, row.decimals));
+      const costHuman = Number(formatAmount(cost, quoteDecimals));
+      const entryQuote =
+        tokensHuman > 0 && costHuman > 0 && Number.isFinite(tokensHuman) && Number.isFinite(costHuman)
+          ? String(costHuman / tokensHuman)
+          : "0";
+      return {
+        address,
+        amount: formatAmount(amount, row.decimals),
+        share: supply > 0n ? Number((amount * 10_000n) / supply) / 100 : 0,
+        entryQuote,
+      };
+    });
   const trades = [...fills]
     .sort((a, b) => {
       if (a.blockNumber !== b.blockNumber) return a.blockNumber < b.blockNumber ? 1 : -1;

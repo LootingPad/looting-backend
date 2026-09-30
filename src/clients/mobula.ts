@@ -107,53 +107,7 @@ export async function getTokenOhlcv(opts: {
   return data;
 }
 
-/** Local seed tokens (scripts/seed-demo-launches.ts) — Mobula has no quotes for these. */
-const DEMO_MARKET: Record<
-  string,
-  { priceUsd: number; marketCap: number; volume24h: number; change1h: number; progress: number }
-> = {
-  "0xa1b2c3d4e5f678901234567890abcdef12345601": {
-    priceUsd: 0.000186,
-    marketCap: 186_420,
-    volume24h: 94_200,
-    change1h: 14.2,
-    progress: 72,
-  },
-  "0xa1b2c3d4e5f678901234567890abcdef12345602": {
-    priceUsd: 0.000084,
-    marketCap: 84_210,
-    volume24h: 41_800,
-    change1h: -3.4,
-    progress: 41,
-  },
-  "0xa1b2c3d4e5f678901234567890abcdef12345603": {
-    priceUsd: 0.00094,
-    marketCap: 940_000,
-    volume24h: 312_400,
-    change1h: 2.1,
-    progress: 100,
-  },
-  "0xa1b2c3d4e5f678901234567890abcdef12345604": {
-    priceUsd: 0.000012,
-    marketCap: 12_440,
-    volume24h: 6_820,
-    change1h: 28.6,
-    progress: 18,
-  },
-  "0xa1b2c3d4e5f678901234567890abcdef12345605": {
-    priceUsd: 0.000257,
-    marketCap: 256_800,
-    volume24h: 128_000,
-    change1h: 6.4,
-    progress: 88,
-  },
-};
-
-export function getDemoMarket(tokenAddress: string) {
-  return DEMO_MARKET[tokenAddress.trim().toLowerCase()] ?? null;
-}
-
-/** Best-effort price enrichment for launch cards. */
+/** Best-effort price enrichment for launch cards — live Mobula only, never seed/demo quotes. */
 export async function getTokenMarketSnapshot(tokenAddress: string): Promise<{
   priceUsd?: number;
   marketCap?: number;
@@ -166,9 +120,6 @@ export async function getTokenMarketSnapshot(tokenAddress: string): Promise<{
   txns?: number;
   progress?: number;
 } | null> {
-  const demo = getDemoMarket(tokenAddress);
-  if (demo) return { ...demo };
-
   try {
     const raw = (await getTokenMetadata(tokenAddress)) as Record<string, unknown>;
     const nested = (raw.data ?? raw) as Record<string, unknown>;

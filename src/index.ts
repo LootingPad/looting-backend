@@ -13,6 +13,7 @@ import {
   registerRewardTableRoutes,
   registerStakingConfigRoutes,
 } from "./modules/config-public.js";
+import { registerLootingTokenRoutes } from "./modules/site-config.js";
 import { registerFeeClaimRoutes } from "./modules/fee-claims.js";
 import { registerFeeRoutes } from "./modules/fees.js";
 import { registerFeedRoutes } from "./modules/feed.js";
@@ -58,6 +59,7 @@ async function main() {
   await registerDevLockClaimRoutes(app);
   await registerLuckyBoxRoutes(app);
   await registerRewardTableRoutes(app);
+  await registerLootingTokenRoutes(app);
   await registerAnalyticsRoutes(app);
   await registerFeedRoutes(app);
   await registerChartRoutes(app);

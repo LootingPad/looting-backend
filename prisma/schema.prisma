@@ -470,6 +470,20 @@ model RewardTableConfig {
   @@map("reward_table_configs")
 }
 
+/** Admin allowlist of ERC-20 assets that may appear as Lucky Box prizes. */
+model RewardPrizeToken {
+  id        String   @id @default(cuid())
+  token     String   @unique
+  label     String?
+  decimals  Int      @default(18)
+  approved  Boolean  @default(true)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([approved])
+  @@map("reward_prize_tokens")
+}
+
 /** Launch logos uploaded by creators — served at /api/media/:id. */
 model MediaAsset {
   id          String   @id @default(cuid())
@@ -479,4 +493,23 @@ model MediaAsset {
   createdAt   DateTime @default(now())
 
   @@map("media_assets")
+}
+
+/**
+ * Singleton public $LOOTING site copy (id always "default").
+ * Empty address keeps the public /looting page in SOON / placeholder mode.
+ */
+model SiteConfig {
+  id                 String   @id @default("default")
+  lootingTokenAddress String  @default("")
+  symbol             String   @default("LOOTING")
+  name               String   @default("LOOTING")
+  tagline            String   @default("")
+  blurb              String   @default("")
+  burnAllocationPct  Float    @default(20)
+  asOfLabel          String?
+  createdAt          DateTime @default(now())
+  updatedAt          DateTime @updatedAt
+
+  @@map("site_configs")
 }

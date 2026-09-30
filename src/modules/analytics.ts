@@ -1,9 +1,12 @@
 import type { FastifyInstance } from "fastify";
+import { getEthUsd } from "../clients/eth-price.js";
 import { env } from "../config/env.js";
 import { prisma } from "../db/prisma.js";
 import {
   FE_FEES,
   FE_STAKING_LOCK_OPTIONS,
+  accruedFeeUsdFromLaunch,
+  feePoolsFromVolumeUsd,
   lockMaskToIds,
   rawToUiAmount,
   toFeLaunch,
@@ -28,14 +31,6 @@ function lastNDays(n: number): string[] {
   return out;
 }
 
-function feeAccrualWeight(progress: number) {
-  return 0.35 + progress / 200;
-}
-
-function accruedFeeUsd(launch: { marketCap: number; creatorTax: number; progress: number }) {
-  return launch.marketCap * (launch.creatorTax / 100) * feeAccrualWeight(launch.progress);
-}
-
 export async function registerAnalyticsRoutes(app: FastifyInstance) {
   app.get("/api/analytics", async (req) => {
     const q = req.query as { window?: string };
@@ -43,7 +38,7 @@ export async function registerAnalyticsRoutes(app: FastifyInstance) {
     const since24h = new Date(Date.now() - 24 * 60 * 60 * 1000);
     const sinceDay = new Date(Date.now() - 24 * 60 * 60 * 1000);
 
-    const [launches, vaults, locks, season, volumeAll, volume24, txnsAll, tradersAll] =
+    const [launches, vaults, locks, season, volumeAll, volume24, txnsAll, tradersAll, volumeByLaunch] =
       await Promise.all([
         prisma.launch.findMany({
           where: { chainId: env.CHAIN_ID, status: "active" },
@@ -75,6 +70,14 @@ export async function registerAnalyticsRoutes(app: FastifyInstance) {
           distinct: ["trader"],
           select: { trader: true },
         }),
+        prisma.trade.groupBy({
+          by: ["launchId"],
+          where: {
+            chainId: env.CHAIN_ID,
+            ...(window === "24h" ? { timestamp: { gte: since24h } } : {}),
+          },
+          _sum: { usdNotional: true },
+        }),
       ]);
 
     const traders24 = await prisma.trade.findMany({
@@ -83,17 +86,29 @@ export async function registerAnalyticsRoutes(app: FastifyInstance) {
       select: { trader: true },
     });
 
+    const launchVolumeMap = new Map(
+      volumeByLaunch
+        .filter((row): row is typeof row & { launchId: string } => Boolean(row.launchId))
+        .map((row) => [row.launchId, Number(row._sum.usdNotional ?? 0)]),
+    );
+
     const launchRows = launches.map((l) => {
       const shaped = toFeLaunch(l);
-      const stats = toFeMarketStats(shaped, { launchedAt: l.launchedAt });
-      const feeUsd = accruedFeeUsd(shaped);
-      const boxUsd = feeUsd * (shaped.luckyShare / 100);
+      const volumeUsd = launchVolumeMap.get(l.id) ?? 0;
+      const stats = toFeMarketStats(shaped, {
+        launchedAt: l.launchedAt,
+        volume24h: volumeUsd,
+      });
+      const pools = feePoolsFromVolumeUsd(volumeUsd, shaped.creatorTax, shaped.luckyShare);
+      const feeUsd = volumeUsd > 0 ? pools.accruedUsd : accruedFeeUsdFromLaunch(shaped, 0);
+      const boxUsd = volumeUsd > 0 ? pools.poolUsd : stats.boxUsd;
+      const creatorUsd = volumeUsd > 0 ? pools.creatorUsd : Math.max(0, feeUsd - boxUsd);
       return {
         launch: shaped,
         stats,
         feeUsd,
         boxUsd,
-        creatorUsd: feeUsd - boxUsd,
+        creatorUsd,
       };
     });
 
@@ -104,7 +119,7 @@ export async function registerAnalyticsRoutes(app: FastifyInstance) {
       Number(volumeAll._sum.usdNotional ?? 0) || volume24h;
     const feeUsd = launchRows.reduce((sum, row) => sum + row.feeUsd, 0);
     const boxUsd = launchRows.reduce((sum, row) => sum + row.boxUsd, 0);
-    const creatorUsd = feeUsd - boxUsd;
+    const creatorUsd = launchRows.reduce((sum, row) => sum + row.creatorUsd, 0);
 
     let seasonXp = 0;
     let seasonTrades = 0;
@@ -255,7 +270,7 @@ export async function registerAnalyticsRoutes(app: FastifyInstance) {
 
     return {
       data: {
-        ethUsd: FE_FEES.ETH_USD,
+        ethUsd: await getEthUsd(),
         window,
         summary: window === "all" ? summaryAll : summary24h,
         fees: {

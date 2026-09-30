@@ -46,38 +46,49 @@ function clampSlippage(bps: number | undefined): number {
 
 /**
  * Quote + prepare Uniswap V3 SwapRouter02 calldata on Robinhood.
- * V4 Universal Router encoding is more complex; V3 router is deployed and sufficient
- * for Terminal swaps until a dedicated V4 path encoder lands.
+ * Tries common fee tiers when the caller does not pin one.
  */
 export async function quoteAndPrepareSwap(req: SwapQuoteRequest): Promise<SwapQuoteResult> {
   if (!env.UNI_V3_QUOTER || !env.UNI_V3_SWAP_ROUTER) {
     throw new Error("UNISWAP_NOT_CONFIGURED");
   }
 
-  const fee = req.fee ?? 3000;
+  const fees = req.fee != null ? [req.fee] : [3000, 500, 10000, 100];
   const client = getPublicClient();
   const quoter = env.UNI_V3_QUOTER as Address;
   const router = env.UNI_V3_SWAP_ROUTER as Address;
 
-  let amountOut: bigint;
-  try {
-    const result = await client.simulateContract({
-      address: quoter,
-      abi: quoterV3Abi,
-      functionName: "quoteExactInputSingle",
-      args: [
-        {
-          tokenIn: req.tokenIn,
-          tokenOut: req.tokenOut,
-          amountIn: req.amountIn,
-          fee,
-          sqrtPriceLimitX96: 0n,
-        },
-      ],
-    });
-    amountOut = (result.result as readonly [bigint, ...unknown[]])[0];
-  } catch (err) {
-    throw new Error(`QUOTE_FAILED: ${err instanceof Error ? err.message : String(err)}`);
+  let amountOut: bigint | null = null;
+  let feeUsed = fees[0]!;
+  let lastErr: unknown;
+  for (const fee of fees) {
+    try {
+      const result = await client.simulateContract({
+        address: quoter,
+        abi: quoterV3Abi,
+        functionName: "quoteExactInputSingle",
+        args: [
+          {
+            tokenIn: req.tokenIn,
+            tokenOut: req.tokenOut,
+            amountIn: req.amountIn,
+            fee,
+            sqrtPriceLimitX96: 0n,
+          },
+        ],
+      });
+      amountOut = (result.result as readonly [bigint, ...unknown[]])[0];
+      feeUsed = fee;
+      if (amountOut > 0n) break;
+    } catch (err) {
+      lastErr = err;
+    }
+  }
+  if (amountOut == null || amountOut <= 0n) {
+    throw new Error(
+      `QUOTE_FAILED: no V3 route for fee tiers [${fees.join(",")}]` +
+        (lastErr instanceof Error ? ` (${lastErr.message.slice(0, 120)})` : ""),
+    );
   }
 
   const slippageBps = clampSlippage(req.slippageBps);
@@ -98,7 +109,7 @@ export async function quoteAndPrepareSwap(req: SwapQuoteRequest): Promise<SwapQu
       {
         tokenIn,
         tokenOut: req.tokenOut,
-        fee,
+        fee: feeUsed,
         recipient: req.recipient,
         amountIn: req.amountIn,
         amountOutMinimum: amountOutMin,
@@ -110,7 +121,7 @@ export async function quoteAndPrepareSwap(req: SwapQuoteRequest): Promise<SwapQu
   return {
     amountOut,
     amountOutMin,
-    fee,
+    fee: feeUsed,
     to: router,
     data,
     value: isEthIn ? req.amountIn : 0n,

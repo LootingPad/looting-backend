@@ -1,13 +1,12 @@
 import type { FastifyInstance } from "fastify";
-import { encodeFunctionData, getAddress, parseAbi, type Address, type Hex } from "viem";
+import { encodeFunctionData, formatEther, getAddress, parseAbi, type Address, type Hex } from "viem";
+import { getEthUsd } from "../clients/eth-price.js";
+import { getPublicClient } from "../clients/rpc.js";
 import { env } from "../config/env.js";
 import { prisma } from "../db/prisma.js";
-import { FE_FEES, toFeLaunch } from "../lib/fe-shape.js";
+import { accruedFeeUsdFromLaunch, toFeLaunch } from "../lib/fe-shape.js";
 import { normalizeAddress } from "../lib/utils.js";
-
-function feeAccrualWeight(progress: number) {
-  return 0.35 + progress / 200;
-}
+import { allocateTaxToLaunch } from "../services/reward-router.js";
 
 const rewardRouterAbi = parseAbi([
   "function claimCreator(address token) returns (uint256 amount)",
@@ -17,7 +16,7 @@ const rewardRouterAbi = parseAbi([
 /**
  * Creator tax (Pons creatorFeeRecipient = RewardRouter):
  * - Accrues on RewardRouter after sweep+harvest+allocate
- * - Claim prepares `claimCreator(token)` to the registry creator wallet
+ * - Claim prepares `claimCreator(token)` — ETH pays to registry.creator
  * Lucky Box pool payouts go through the Rewards open flow.
  */
 export async function registerFeeClaimRoutes(app: FastifyInstance) {
@@ -35,19 +34,64 @@ export async function registerFeeClaimRoutes(app: FastifyInstance) {
     });
 
     const routerMode = Boolean(env.LOOTING_REWARD_ROUTER);
+    const ethUsd = await getEthUsd();
+
+    const volumes = await prisma.trade.groupBy({
+      by: ["launchId"],
+      where: {
+        chainId: env.CHAIN_ID,
+        launchId: { in: created.map((l) => l.id) },
+        confirmationState: { in: ["CONFIRMED", "FINALIZED", "PENDING"] },
+      },
+      _sum: { usdNotional: true },
+    });
+    const volumeByLaunch = new Map(
+      volumes.map((row) => [row.launchId, Number(row._sum.usdNotional ?? 0)]),
+    );
+
+    let liveByToken = new Map<string, bigint>();
+    if (routerMode && created.length > 0 && env.LOOTING_REWARD_ROUTER) {
+      try {
+        const client = getPublicClient();
+        const router = getAddress(env.LOOTING_REWARD_ROUTER) as Address;
+        const rows = await client.multicall({
+          allowFailure: true,
+          contracts: created.map((l) => ({
+            address: router,
+            abi: rewardRouterAbi,
+            functionName: "creatorClaimable" as const,
+            args: [getAddress(l.token) as Address] as const,
+          })),
+        });
+        liveByToken = new Map(
+          created.map((l, i) => {
+            const row = rows[i];
+            const wei =
+              row?.status === "success" && typeof row.result === "bigint" ? row.result : 0n;
+            return [l.token.toLowerCase(), wei] as const;
+          }),
+        );
+      } catch {
+        liveByToken = new Map();
+      }
+    }
 
     const creator = created.map((l) => {
       const shaped = toFeLaunch(l);
-      const feeUsd =
-        shaped.marketCap * (shaped.creatorTax / 100) * feeAccrualWeight(shaped.progress);
+      const liveWei = liveByToken.get(l.token.toLowerCase()) ?? 0n;
+      const liveEth = liveWei > 0n ? Number(formatEther(liveWei)) : 0;
+      const volumeUsd = volumeByLaunch.get(l.id) ?? 0;
+      const feeUsd = accruedFeeUsdFromLaunch(shaped, volumeUsd);
       const creatorUsd = feeUsd * (1 - shaped.luckyShare / 100);
+      const estimatedEth = liveEth > 0 ? liveEth : ethUsd > 0 ? creatorUsd / ethUsd : 0;
       return {
         token: shaped.address,
         symbol: shaped.symbol,
         name: shaped.name,
-        estimatedUsd: creatorUsd,
-        estimatedEth: creatorUsd / FE_FEES.ETH_USD,
-        claimable: creatorUsd > 0,
+        estimatedUsd: liveEth > 0 && ethUsd > 0 ? liveEth * ethUsd : creatorUsd,
+        estimatedEth,
+        claimableWei: liveWei.toString(),
+        claimable: liveWei > 0n,
         mode: routerMode ? ("reward_router" as const) : ("auto_settled" as const),
       };
     });
@@ -100,24 +144,30 @@ export async function registerFeeClaimRoutes(app: FastifyInstance) {
       }
     }
 
-    const tokens: string[] = [];
+    type LaunchRow = { token: string; curve: string | null; creator: string };
+    const launches: LaunchRow[] = [];
     if (token) {
       const launch = await prisma.launch.findUnique({
         where: { chainId_token: { chainId: env.CHAIN_ID, token } },
+        select: { token: true, curve: true, creator: true },
       });
-      if (launch && launch.creator !== wallet) {
+      if (!launch) {
+        return reply.code(404).send({ error: "NOT_FOUND", message: "Launch not found in LOOTING registry." });
+      }
+      if (launch.creator !== wallet) {
         return reply.code(403).send({ error: "NOT_CREATOR", message: "Only the creator can claim." });
       }
-      tokens.push(token);
+      launches.push(launch);
     } else {
-      const launches = await prisma.launch.findMany({
+      const rows = await prisma.launch.findMany({
         where: { chainId: env.CHAIN_ID, creator: wallet, status: "active" },
         take: 50,
+        select: { token: true, curve: true, creator: true },
       });
-      if (launches.length === 0) {
+      if (rows.length === 0) {
         return reply.code(404).send({ error: "NOT_FOUND", message: "No creator launches to claim." });
       }
-      tokens.push(...launches.map((l) => l.token));
+      launches.push(...rows);
     }
 
     if (!env.LOOTING_REWARD_ROUTER) {
@@ -125,28 +175,70 @@ export async function registerFeeClaimRoutes(app: FastifyInstance) {
         data: {
           mode: "auto_settled",
           calls: [],
-          tokens,
+          tokens: launches.map((l) => l.token),
           message: "Creator fees settle to your wallet on every trade. Marked as received.",
         },
       };
     }
 
+    // Settle pending curve tax into creatorClaimable before building the wallet call.
+    for (const launch of launches) {
+      try {
+        await allocateTaxToLaunch({ token: launch.token, curve: launch.curve });
+      } catch (err) {
+        console.warn("[fee-claims] settle before claim failed", launch.token, err);
+      }
+    }
+
     const router = getAddress(env.LOOTING_REWARD_ROUTER) as Address;
-    const calls = tokens.map((t) => ({
+    const client = getPublicClient();
+    const claimables = await client.multicall({
+      allowFailure: true,
+      contracts: launches.map((l) => ({
+        address: router,
+        abi: rewardRouterAbi,
+        functionName: "creatorClaimable" as const,
+        args: [getAddress(l.token) as Address] as const,
+      })),
+    });
+
+    const payable = launches.filter((_, i) => {
+      const row = claimables[i];
+      return row?.status === "success" && typeof row.result === "bigint" && row.result > 0n;
+    });
+
+    if (payable.length === 0) {
+      return reply.code(409).send({
+        error: "NOTHING_CLAIMABLE",
+        message:
+          "No creator fee is claimable right now. New trade tax may still be settling — try again in a few seconds.",
+      });
+    }
+
+    const calls = payable.map((l) => ({
       to: router,
       data: encodeFunctionData({
         abi: rewardRouterAbi,
         functionName: "claimCreator",
-        args: [getAddress(t) as Address],
+        args: [getAddress(l.token) as Address],
       }) as Hex,
       value: "0",
     }));
+
+    const totalWei = payable.reduce((sum, _, i) => {
+      const idx = launches.findIndex((l) => l.token === payable[i]!.token);
+      const row = claimables[idx];
+      const wei = row?.status === "success" && typeof row.result === "bigint" ? row.result : 0n;
+      return sum + wei;
+    }, 0n);
 
     return {
       data: {
         mode: "reward_router",
         calls,
-        tokens,
+        tokens: payable.map((l) => l.token),
+        claimableWei: totalWei.toString(),
+        claimableEth: formatEther(totalWei),
         message: "Confirm in wallet to claim creator fees from LootingRewardRouter.",
       },
     };

@@ -1,13 +1,17 @@
 /**
- * Free DexScreener HTTP (no key) — Explore feed for Robinhood chain.
- * https://docs.dexscreener.com/api/reference
+ * DexScreener client — kept for optional offline tooling only.
+ * Product Explore / fees / ETH FX use Pons + on-chain (see live-feed, eth-price).
+ * Do not wire this into launch list or ETH_USD paths.
  */
 import {
   toFeMarketStats,
+  type ExploreStage,
   type FeLaunch,
-  type FeMarketStats,
+  type FeLaunchCard,
 } from "../lib/fe-shape.js";
 import { TtlCache } from "../lib/utils.js";
+
+export type { ExploreStage, FeLaunchCard };
 
 const BASE = "https://api.dexscreener.com";
 const CHAIN = "robinhood";
@@ -17,14 +21,6 @@ const FETCH_HEADERS = {
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
   Referer: "https://dexscreener.com/",
 } as const;
-
-export type ExploreStage = "new" | "almost" | "migrate" | "all";
-
-export type FeLaunchCard = FeLaunch & {
-  stats: FeMarketStats;
-  logoUrl?: string;
-  sparkline?: number[];
-};
 
 export type DexPairSnapshot = {
   priceUsd?: number;
@@ -114,19 +110,6 @@ function pickRobinhoodPair(pairs: DexPair[]): DexPair | null {
   return [...pool].sort((a, b) => (b.liquidity?.usd ?? 0) - (a.liquidity?.usd ?? 0))[0] ?? null;
 }
 
-function sparkFromChanges(price: number, ch: { h1?: number; h6?: number; h24?: number }): number[] {
-  const back = (pct: number | undefined) => {
-    if (pct == null || !Number.isFinite(pct)) return undefined;
-    const factor = 1 + pct / 100;
-    if (!(factor > 0)) return undefined;
-    return price / factor;
-  };
-  const pts = [back(ch.h24), back(ch.h6), back(ch.h1), price].filter(
-    (n): n is number => n != null && n > 0,
-  );
-  return pts.length >= 2 ? pts : [price, price];
-}
-
 function pairToSnapshot(pair: DexPair): DexPairSnapshot {
   const priceUsd = num(pair.priceUsd);
   const change1h = num(pair.priceChange?.h1);
@@ -144,9 +127,8 @@ function pairToSnapshot(pair: DexPair): DexPairSnapshot {
     txns1h: txnCount(pair.txns?.h1) || undefined,
     liquidity: num(pair.liquidity?.usd),
     pairCreatedAt: pair.pairCreatedAt,
-    sparkline: priceUsd
-      ? sparkFromChanges(priceUsd, { h1: change1h, h6: change6h, h24: change24h })
-      : undefined,
+    // Real OHLCV only — never synthesize a sparkline from % deltas.
+    sparkline: undefined,
   };
 }
 
@@ -225,8 +207,9 @@ function pairToCard(pair: DexPair): FeLaunchCard | null {
     progress: graduated ? 100 : progress,
     change1h: snap.change1h ?? 0,
     priceUsd,
-    luckyShare: 20,
-    creatorTax: 1,
+    // Unknown until Launch registry / prepare persists bps — never invent 20/1.
+    luckyShare: 0,
+    creatorTax: 0,
     phase: graduated ? "graduated" : "curve",
   };
 
@@ -243,14 +226,13 @@ function pairToCard(pair: DexPair): FeLaunchCard | null {
     ath: peak,
   });
   stats.age = formatAge(snap.pairCreatedAt);
-  stats.boxUsd =
-    marketCap * (launch.creatorTax / 100) * (0.35 + launch.progress / 200) * (launch.luckyShare / 100);
+  // boxUsd already set by toFeMarketStats (volume-first)
 
   return {
     ...launch,
     stats,
     ...(logoUrl ? { logoUrl } : {}),
-    ...(snap.sparkline ? { sparkline: snap.sparkline } : priceUsd > 0 ? { sparkline: [priceUsd, priceUsd] } : {}),
+    ...(snap.sparkline && snap.sparkline.length >= 2 ? { sparkline: snap.sparkline } : {}),
   };
 }
 

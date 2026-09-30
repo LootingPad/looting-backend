@@ -1,4 +1,7 @@
 import type { FastifyInstance } from "fastify";
+import { formatEther, parseAbi, type Address } from "viem";
+import { getEthUsd } from "../clients/eth-price.js";
+import { getPublicClient } from "../clients/rpc.js";
 import { env } from "../config/env.js";
 import { prisma } from "../db/prisma.js";
 import {
@@ -15,6 +18,42 @@ import { readDevLockClaimable, readPendingRewards } from "../lib/actions.js";
 import { normalizeAddress, xpForQualifiedTrade } from "../lib/utils.js";
 import { reconcileWalletBoxExits } from "../services/trade-rewards.js";
 import { getCurrentSeason } from "../services/xp.js";
+
+const rewardRouterViewAbi = parseAbi([
+  "function luckyBoxClaimable(address token) view returns (uint256)",
+]);
+
+async function liveBoxPoolsByToken(tokens: string[], ethUsd: number): Promise<Map<string, { eth: number; usd: number }>> {
+  const out = new Map<string, { eth: number; usd: number }>();
+  const unique = [...new Set(tokens.map((t) => t.toLowerCase()).filter((t) => /^0x[a-f0-9]{40}$/.test(t)))];
+  if (unique.length === 0 || !env.LOOTING_REWARD_ROUTER) return out;
+  try {
+    const client = getPublicClient();
+    const router = env.LOOTING_REWARD_ROUTER as Address;
+    const rows = await client.multicall({
+      allowFailure: true,
+      contracts: unique.map((token) => ({
+        address: router,
+        abi: rewardRouterViewAbi,
+        functionName: "luckyBoxClaimable" as const,
+        args: [token as Address] as const,
+      })),
+    });
+    unique.forEach((token, i) => {
+      const row = rows[i];
+      const wei = row?.status === "success" && typeof row.result === "bigint" ? row.result : 0n;
+      const eth = Number(formatEther(wei));
+      const safeEth = Number.isFinite(eth) && eth > 0 ? eth : 0;
+      out.set(token, {
+        eth: safeEth,
+        usd: safeEth > 0 && ethUsd > 0 ? safeEth * ethUsd : 0,
+      });
+    });
+  } catch {
+    /* leave empty — FE hides pool cell */
+  }
+  return out;
+}
 
 export async function registerWalletRoutes(app: FastifyInstance) {
   app.get("/api/wallet/:address", async (req, reply) => {
@@ -126,8 +165,45 @@ export async function registerWalletRoutes(app: FastifyInstance) {
       take: 100,
     });
 
+    const ethUsd = await getEthUsd().catch(() => 0);
+    const prizeTokens = [
+      ...new Set(
+        boxes
+          .flatMap((b) => b.rewards.map((r) => r.token))
+          .filter((t): t is string => typeof t === "string" && t !== "ETH" && t.startsWith("0x"))
+          .map((t) => t.toLowerCase()),
+      ),
+    ];
+    const prizeRows =
+      prizeTokens.length > 0
+        ? await prisma.rewardPrizeToken.findMany({ where: { token: { in: prizeTokens } } })
+        : [];
+    const prizeByToken = new Map(prizeRows.map((r) => [r.token.toLowerCase(), r]));
+    const poolByToken = await liveBoxPoolsByToken(
+      boxes.map((b) => b.launch?.token ?? "").filter(Boolean),
+      ethUsd,
+    );
+
     return {
-      data: boxes.map((b) => toFeLuckyBox(b, b.launch?.symbol ?? "")),
+      data: boxes.map((b) => {
+        const latest = b.rewards[b.rewards.length - 1];
+        const meta =
+          latest?.token && latest.token !== "ETH"
+            ? prizeByToken.get(latest.token.toLowerCase())
+            : undefined;
+        const pool = b.launch?.token ? poolByToken.get(b.launch.token.toLowerCase()) : undefined;
+        return toFeLuckyBox(
+          b,
+          { token: b.launch?.token, symbol: b.launch?.symbol },
+          {
+            ethUsd,
+            prizeLabel: meta?.label ?? (latest?.token === "ETH" ? "ETH" : null),
+            prizeDecimals: meta?.decimals ?? 18,
+            boxPoolEth: pool?.eth,
+            boxPoolUsd: pool?.usd,
+          },
+        );
+      }),
     };
   });
 
@@ -275,6 +351,7 @@ export async function registerWalletRoutes(app: FastifyInstance) {
       skip: offset,
     });
 
+    const ethUsd = await getEthUsd();
     return {
       data: trades.map((t) => {
         const usd = t.usdNotional == null ? 0 : Number(String(t.usdNotional));
@@ -290,7 +367,7 @@ export async function registerWalletRoutes(app: FastifyInstance) {
               symbol: null,
               description: null,
             });
-        return toFeWalletTrade(t, launch, xpForQualifiedTrade(usd));
+        return toFeWalletTrade(t, launch, xpForQualifiedTrade(usd), ethUsd);
       }),
       limit,
       offset,

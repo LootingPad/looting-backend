@@ -36,10 +36,10 @@ const envSchema = z.object({
     .string()
     .default("false")
     .transform((v) => v === "true" || v === "1"),
-  /** Explore coins from DexScreener (Robinhood) — Migrate / DEX-listed. */
+  /** DexScreener Explore — off by default; product uses Pons + on-chain trenches. */
   ENABLE_DEXSCREENER_FEED: z
     .string()
-    .default("true")
+    .default("false")
     .transform((v) => v === "true" || v === "1"),
   /** ponsapi.dev — live New Pair / Almost (Pons V2 creates). */
   PONSAPI_API_KEY: z.string().optional().default(""),

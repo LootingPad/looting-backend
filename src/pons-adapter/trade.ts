@@ -1,4 +1,5 @@
 import { encodeFunctionData, getAddress, parseAbi, parseUnits, type Address, type Hex } from "viem";
+import { getEthUsd } from "../clients/eth-price.js";
 import { getPublicClient } from "../clients/rpc.js";
 import { prisma } from "../db/prisma.js";
 import { env } from "../config/env.js";
@@ -29,10 +30,13 @@ export type TradeCall = {
   value: string;
 };
 
-export function tradeFeeWei(ethUsd = FE_FEES.ETH_USD): bigint {
+export async function tradeFeeWei(ethUsd?: number): Promise<bigint> {
+  const fxUsd = ethUsd != null && ethUsd > 0 ? ethUsd : await getEthUsd();
   const usd = BigInt(Math.round(FE_FEES.TRADE_FEE_USD * 1_000_000));
-  const fx = BigInt(Math.round(ethUsd * 1_000_000));
-  if (fx <= 0n) return 0n;
+  const fx = BigInt(Math.round(fxUsd * 1_000_000));
+  if (fx <= 0n) {
+    throw new TradePrepareError("ETH_PRICE_UNAVAILABLE", "Could not resolve ETH/USD for the trade fee.");
+  }
   return (usd * 10n ** 18n) / fx;
 }
 
@@ -145,7 +149,7 @@ export async function prepareCurveTrade(input: {
   } else {
     amountIn = parseHuman(input.amount, input.side === "buy" ? quoteDecimals : row.decimals);
   }
-  const fee = tradeFeeWei();
+  const fee = await tradeFeeWei();
   const feeWallet = getAddress(env.TRADE_FEE_WALLET);
   const calls: TradeCall[] = [];
 
