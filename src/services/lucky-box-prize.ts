@@ -120,10 +120,13 @@ export async function settlePrize(opts: {
     return emptyResult(opts.outcome.label, { error: "MODULE_NOT_SET" });
   }
 
-  const keeper = getKeeperWallet();
-  if (!keeper?.account) {
+  const walletClient = getKeeperWallet();
+  if (!walletClient?.account) {
     return emptyResult(opts.outcome.label, { error: "KEEPER_NOT_SET" });
   }
+  // Re-bind after the null check so nested closures keep a non-null keeper type.
+  const keeper = walletClient;
+  const keeperAccount = walletClient.account;
 
   const module = getAddress(env.LOOTING_LUCKY_BOX_ETH_MODULE) as Address;
   const launchToken = getAddress(opts.launchToken) as Address;
@@ -137,7 +140,7 @@ export async function settlePrize(opts: {
         functionName: "creditEthPrize",
         args: [launchToken, winner, opts.amountWei, opts.boxIdBytes32],
         chain: keeper.chain,
-        account: keeper.account,
+        account: keeperAccount,
       });
       return {
         creditTx,
@@ -204,7 +207,7 @@ export async function settlePrize(opts: {
       functionName: "creditEthPrize",
       args: [launchToken, winner, opts.amountWei, opts.boxIdBytes32],
       chain: keeper.chain,
-      account: keeper.account,
+      account: keeperAccount,
     });
     return {
       creditTx,
@@ -238,9 +241,9 @@ export async function settlePrize(opts: {
       address: module,
       abi: ethModuleAbi,
       functionName: "creditEthPrize",
-      args: [launchToken, keeper.account.address, opts.amountWei, opts.boxIdBytes32],
+      args: [launchToken, keeperAccount.address, opts.amountWei, opts.boxIdBytes32],
       chain: keeper.chain,
-      account: keeper.account,
+      account: keeperAccount,
     });
     await getPublic().waitForTransactionReceipt({ hash: creditTx });
 
@@ -250,7 +253,7 @@ export async function settlePrize(opts: {
       functionName: "claimEthPrize",
       args: [launchToken],
       chain: keeper.chain,
-      account: keeper.account,
+      account: keeperAccount,
     });
     await getPublic().waitForTransactionReceipt({ hash: claimTx });
 
@@ -260,7 +263,7 @@ export async function settlePrize(opts: {
         data: quote.data,
         value: quote.value,
         chain: keeper.chain,
-        account: keeper.account,
+        account: keeperAccount,
       });
       await getPublic().waitForTransactionReceipt({ hash: swapTx });
       return {
@@ -279,7 +282,7 @@ export async function settlePrize(opts: {
         to: winner,
         value: opts.amountWei,
         chain: keeper.chain,
-        account: keeper.account,
+        account: keeperAccount,
       });
       await getPublic().waitForTransactionReceipt({ hash: fallbackTx });
       return {
