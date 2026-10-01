@@ -8,6 +8,7 @@ import { tokenAbi } from "./abi.js";
 const GATEWAYS = [
   "https://ipfs.filebase.io/ipfs/",
   "https://4everland.io/ipfs/",
+  "https://cloudflare-ipfs.com/ipfs/",
   "https://nftstorage.link/ipfs/",
   "https://w3s.link/ipfs/",
   "https://dweb.link/ipfs/",
@@ -80,29 +81,61 @@ function candidates(logo: string): string[] {
   return [https];
 }
 
+/** Many IPFS gateways return application/octet-stream — sniff magic bytes. */
+function sniffImageType(body: Buffer, headerType: string): string | null {
+  const type = headerType.split(";")[0].trim().toLowerCase();
+  if (IMAGE_TYPES.has(type) || type.startsWith("image/")) {
+    return type === "image/jpg" ? "image/jpeg" : type;
+  }
+  if (body.length >= 12) {
+    if (body[0] === 0x89 && body[1] === 0x50 && body[2] === 0x4e && body[3] === 0x47) return "image/png";
+    if (body[0] === 0xff && body[1] === 0xd8 && body[2] === 0xff) return "image/jpeg";
+    if (body[0] === 0x47 && body[1] === 0x49 && body[2] === 0x46) return "image/gif";
+    if (
+      body[0] === 0x52 &&
+      body[1] === 0x49 &&
+      body[2] === 0x46 &&
+      body[3] === 0x46 &&
+      body[8] === 0x57 &&
+      body[9] === 0x45 &&
+      body[10] === 0x42 &&
+      body[11] === 0x50
+    ) {
+      return "image/webp";
+    }
+  }
+  const head = body.subarray(0, Math.min(body.length, 256)).toString("utf8").trimStart();
+  if (head.startsWith("<svg") || head.startsWith("<?xml")) return "image/svg+xml";
+  return null;
+}
+
 async function pull(url: string, signal?: AbortSignal): Promise<{ type: string; body: Buffer } | null> {
   try {
     const response = await fetch(url, {
       redirect: "follow",
-      signal: signal ?? AbortSignal.timeout(10_000),
+      signal: signal ?? AbortSignal.timeout(8_000),
       headers: {
         Accept: "image/avif,image/webp,image/apng,image/*,*/*;q=0.8",
         "User-Agent": BROWSER_UA,
       },
     });
     if (!response.ok) return null;
-    const type = (response.headers.get("content-type") ?? "").split(";")[0].trim().toLowerCase();
+    const headerType = (response.headers.get("content-type") ?? "").split(";")[0].trim().toLowerCase();
     const body = Buffer.from(await response.arrayBuffer());
     if (body.length === 0 || body.length > 2_000_000) return null;
-    if (type === "application/json" || body[0] === 0x7b) {
-      const meta = JSON.parse(body.toString("utf8")) as { image?: string; image_url?: string };
-      const nested = meta.image || meta.image_url;
-      if (!nested || nested === url) return null;
-      const next = candidates(nested)[0];
-      return next ? pull(next, signal) : null;
+    if (headerType === "application/json" || body[0] === 0x7b) {
+      try {
+        const meta = JSON.parse(body.toString("utf8")) as { image?: string; image_url?: string };
+        const nested = meta.image || meta.image_url;
+        if (!nested || nested === url) return null;
+        return pullFirst(candidates(nested));
+      } catch {
+        return null;
+      }
     }
-    if (!IMAGE_TYPES.has(type) && !type.startsWith("image/")) return null;
-    return { type: type.startsWith("image/") ? type : "image/png", body };
+    const type = sniffImageType(body, headerType);
+    if (!type) return null;
+    return { type, body };
   } catch {
     return null;
   }
@@ -111,11 +144,12 @@ async function pull(url: string, signal?: AbortSignal): Promise<{ type: string; 
 /** Race gateways; first usable image wins. */
 async function pullFirst(urls: string[]): Promise<{ type: string; body: Buffer } | null> {
   if (urls.length === 0) return null;
+  const unique = [...new Set(urls)];
   const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), 12_000);
+  const timer = setTimeout(() => controller.abort(), 14_000);
   try {
     return await Promise.any(
-      urls.map(async (url) => {
+      unique.map(async (url) => {
         const file = await pull(url, controller.signal);
         if (!file) throw new Error("miss");
         controller.abort();
@@ -123,6 +157,11 @@ async function pullFirst(urls: string[]): Promise<{ type: string; body: Buffer }
       }),
     );
   } catch {
+    // Parallel race failed — try a few sequentially with fresh timeouts.
+    for (const url of unique.slice(0, 4)) {
+      const file = await pull(url);
+      if (file) return file;
+    }
     return null;
   } finally {
     clearTimeout(timer);
@@ -146,7 +185,7 @@ async function chainLogo(token: string): Promise<string> {
 async function resolveTokenImage(token: string): Promise<CachedImage | null> {
   const key = token.toLowerCase();
   const cached = images.get(key);
-  if (cached && Date.now() - cached.at < 10 * 60_000) return cached;
+  if (cached && Date.now() - cached.at < 30 * 60_000) return cached;
   const absent = missingUntil.get(key);
   if (absent && absent > Date.now()) return null;
 
@@ -154,11 +193,10 @@ async function resolveTokenImage(token: string): Promise<CachedImage | null> {
     where: { token: key },
     select: { id: true, logo: true },
   });
-  if (!row) return null;
-  let logo = row.logo.trim();
+  let logo = (row?.logo ?? "").trim();
   if (!logo) {
     logo = await chainLogo(key);
-    if (logo) await prisma.trenchPair.update({ where: { id: row.id }, data: { logo } });
+    if (logo && row) await prisma.trenchPair.update({ where: { id: row.id }, data: { logo } });
   }
   if (!logo) {
     missingUntil.set(key, Date.now() + 60_000);
@@ -169,7 +207,7 @@ async function resolveTokenImage(token: string): Promise<CachedImage | null> {
   if (mediaId) {
     const media = await loadMediaAsset(mediaId);
     if (!media) {
-      missingUntil.set(key, Date.now() + 60_000);
+      missingUntil.set(key, Date.now() + 30_000);
       return null;
     }
     const stored = { ...media, at: Date.now() };
@@ -180,8 +218,7 @@ async function resolveTokenImage(token: string): Promise<CachedImage | null> {
 
   const file = await pullFirst(candidates(logo));
   if (!file) {
-    // Gateway flaps / rate limits — retry sooner than a hard miss.
-    missingUntil.set(key, Date.now() + 8_000);
+    missingUntil.set(key, Date.now() + 5_000);
     return null;
   }
   const stored = { ...file, at: Date.now() };
@@ -194,7 +231,7 @@ async function resolveTokenImage(token: string): Promise<CachedImage | null> {
 export async function loadTokenImage(token: string): Promise<CachedImage | null> {
   const key = token.toLowerCase();
   const cached = images.get(key);
-  if (cached && Date.now() - cached.at < 10 * 60_000) return cached;
+  if (cached && Date.now() - cached.at < 30 * 60_000) return cached;
   const flight = inFlight.get(key);
   if (flight) return flight;
   const job = resolveTokenImage(key).finally(() => inFlight.delete(key));

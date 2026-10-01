@@ -1,0 +1,2 @@
+-- AlterTable
+ALTER TABLE "site_configs" ADD COLUMN IF NOT EXISTS "logo" TEXT NOT NULL DEFAULT '';

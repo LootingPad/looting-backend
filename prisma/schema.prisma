@@ -500,16 +500,17 @@ model MediaAsset {
  * Empty address keeps the public /looting page in SOON / placeholder mode.
  */
 model SiteConfig {
-  id                 String   @id @default("default")
-  lootingTokenAddress String  @default("")
-  symbol             String   @default("LOOTING")
-  name               String   @default("LOOTING")
-  tagline            String   @default("")
-  blurb              String   @default("")
-  burnAllocationPct  Float    @default(20)
-  asOfLabel          String?
-  createdAt          DateTime @default(now())
-  updatedAt          DateTime @updatedAt
+  id                  String   @id @default("default")
+  lootingTokenAddress String   @default("")
+  symbol              String   @default("LOOTING")
+  name                String   @default("LOOTING")
+  logo                String   @default("")
+  tagline             String   @default("")
+  blurb               String   @default("")
+  burnAllocationPct   Float    @default(20)
+  asOfLabel           String?
+  createdAt           DateTime @default(now())
+  updatedAt           DateTime @updatedAt
 
   @@map("site_configs")
 }

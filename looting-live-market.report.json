@@ -1,0 +1,43 @@
+{
+  "at": "2026-10-01T00:42:00.000Z",
+  "title": "/looting live market — on-chain + Pons",
+  "summary": "Replace Mobula/seed market on /looting with live on-chain + Pons feed, tidy hero/metrics UI, and fill holders.",
+  "repos": [
+    {
+      "name": "looting-backend",
+      "remote": "https://github.com/LootingPad/looting-backend.git",
+      "changes": [
+        "Added src/lib/token-profile.ts — resolveTokenProfile, loadLootingLiveMarket, loadLootingCandles (RPC + Pons, no Mobula)",
+        "GET /api/looting-token returns live market, candles, socials from CA",
+        "Holders: Pons field when present, else curve buy/sell net balance count",
+        "Site config logo migration + admin/image helpers for token logo"
+      ]
+    },
+    {
+      "name": "main-code",
+      "remote": "https://github.com/LootingPad/main-code.git",
+      "changes": [
+        "LootingToken.tsx — live API wiring, skeleton loading (no Waiting on CA card), hero + 4-col metrics board, Lock/Stake/Boxes slots",
+        "globals.css — token-detail style metrics grid (hairline borders), hero actions, mobile 4-col",
+        "formatPrice compact superscript spacing fix",
+        "CandleChart / api helpers for live looting market"
+      ]
+    }
+  ],
+  "ui": {
+    "hero": "Token logo, $SYMBOL, CA copy, social chips, spot price + Buy/Explore",
+    "metrics": "4 columns × 3 rows inside hero sheet — Lock, Stake, Boxes, Price, then market/supply stats",
+    "chart": "On-chain launch → now candles below hero",
+    "loading": "Skeleton shimmer for values + chart while loading / no CA"
+  },
+  "deploy": {
+    "railwayProject": "looting",
+    "services": ["looting-backend", "looting-web"],
+    "note": "Push GitHub main, then redeploy Railway production"
+  },
+  "knownLimits": [
+    "Lock / Stake / Boxes cells are UI slots; values stay — until API aggregates ship",
+    "Holders from curve fills undercount post-graduation DEX-only wallets when Pons omits holderCount",
+    "Backend production had a prior failed deploy — fresh push should rebuild"
+  ]
+}

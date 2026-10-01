@@ -4,6 +4,7 @@ import { getAddress, parseAbi, type Address } from "viem";
 import { env } from "../config/env.js";
 import { getPublicClient } from "../clients/rpc.js";
 import { prisma } from "../db/prisma.js";
+import { resolveTokenProfile } from "../lib/token-profile.js";
 import { normalizeAddress } from "../lib/utils.js";
 import {
   hydrateRewardOutcomes,
@@ -304,7 +305,7 @@ export async function registerAdminRoutes(app: FastifyInstance) {
     };
   });
 
-  /** Resolve ERC-20 symbol/name/decimals for admin label autofill. */
+  /** Resolve ERC-20 + logo for admin label autofill (prize tokens + $LOOTING CA). */
   app.get("/api/admin/token/lookup", async (req, reply) => {
     if (!requireAdmin(req, reply)) return;
     const raw = String((req.query as { token?: string }).token ?? "").trim();
@@ -316,8 +317,8 @@ export async function registerAdminRoutes(app: FastifyInstance) {
     }
 
     try {
-      const meta = await readErc20Meta(getAddress(token) as Address);
-      const label = meta.symbol || meta.name || null;
+      const profile = await resolveTokenProfile(token);
+      const label = profile.symbol || profile.name || null;
       if (!label) {
         return reply.code(404).send({
           error: "SYMBOL_NOT_FOUND",
@@ -326,11 +327,14 @@ export async function registerAdminRoutes(app: FastifyInstance) {
       }
       return {
         data: {
-          token,
+          token: profile.address,
           label,
-          symbol: meta.symbol || null,
-          name: meta.name || null,
-          decimals: meta.decimals,
+          symbol: profile.symbol || null,
+          name: profile.name || null,
+          decimals: profile.decimals,
+          logo: profile.logo || null,
+          description: profile.description || null,
+          totalSupply: profile.totalSupply,
         },
       };
     } catch (err) {

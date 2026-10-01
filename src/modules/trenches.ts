@@ -61,7 +61,7 @@ export async function registerTrenchRoutes(app: FastifyInstance) {
     const image = await loadTokenImage(token);
     if (!image) return reply.code(404).send();
     return reply
-      .header("cache-control", "public, max-age=600")
+      .header("cache-control", "public, max-age=1800, stale-while-revalidate=86400")
       .type(image.type)
       .send(image.body);
   });

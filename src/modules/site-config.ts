@@ -1,5 +1,6 @@
 import type { FastifyInstance } from "fastify";
 import { prisma } from "../db/prisma.js";
+import { loadLootingLiveMarket, loadLootingCandles, resolveTokenProfile, browserLogoUrl } from "../lib/token-profile.js";
 import { normalizeAddress } from "../lib/utils.js";
 
 export const SITE_CONFIG_ID = "default";
@@ -8,6 +9,7 @@ export type SiteConfigPublic = {
   address: string;
   symbol: string;
   name: string;
+  logo: string;
   tagline: string;
   blurb: string;
   burnAllocationPct: number;
@@ -19,6 +21,7 @@ function toPublic(row: {
   lootingTokenAddress: string;
   symbol: string;
   name: string;
+  logo?: string | null;
   tagline: string;
   blurb: string;
   burnAllocationPct: number;
@@ -29,6 +32,7 @@ function toPublic(row: {
     address: row.lootingTokenAddress,
     symbol: row.symbol,
     name: row.name,
+    logo: row.logo ?? "",
     tagline: row.tagline,
     blurb: row.blurb,
     burnAllocationPct: row.burnAllocationPct,
@@ -49,6 +53,7 @@ export type SiteConfigUpdate = {
   lootingTokenAddress?: string;
   symbol?: string;
   name?: string;
+  logo?: string;
   tagline?: string;
   blurb?: string;
   burnAllocationPct?: number;
@@ -61,6 +66,7 @@ export function parseSiteConfigUpdate(body: SiteConfigUpdate): {
     lootingTokenAddress?: string;
     symbol?: string;
     name?: string;
+    logo?: string;
     tagline?: string;
     blurb?: string;
     burnAllocationPct?: number;
@@ -71,6 +77,7 @@ export function parseSiteConfigUpdate(body: SiteConfigUpdate): {
     lootingTokenAddress?: string;
     symbol?: string;
     name?: string;
+    logo?: string;
     tagline?: string;
     blurb?: string;
     burnAllocationPct?: number;
@@ -92,6 +99,7 @@ export function parseSiteConfigUpdate(body: SiteConfigUpdate): {
 
   if (body.symbol !== undefined) data.symbol = body.symbol.trim() || "LOOTING";
   if (body.name !== undefined) data.name = body.name.trim() || "LOOTING";
+  if (body.logo !== undefined) data.logo = body.logo.trim();
   if (body.tagline !== undefined) data.tagline = body.tagline.trim();
   if (body.blurb !== undefined) data.blurb = body.blurb.trim();
 
@@ -115,6 +123,25 @@ export async function upsertSiteConfig(update: SiteConfigUpdate) {
   const parsed = parseSiteConfigUpdate(update);
   if (!parsed.ok) return parsed;
 
+  // When CA is set and meta fields were left blank, pull them from chain/Mobula.
+  if (parsed.data.lootingTokenAddress) {
+    try {
+      const profile = await resolveTokenProfile(parsed.data.lootingTokenAddress);
+      if (!parsed.data.symbol || parsed.data.symbol === "LOOTING") parsed.data.symbol = profile.symbol;
+      if (!parsed.data.name || parsed.data.name === "LOOTING") parsed.data.name = profile.name;
+      if (parsed.data.logo === undefined || parsed.data.logo === "") {
+        parsed.data.logo = browserLogoUrl(profile.logo) || profile.logo;
+      } else {
+        parsed.data.logo = browserLogoUrl(parsed.data.logo) || parsed.data.logo;
+      }
+      if ((!parsed.data.blurb || !parsed.data.blurb.trim()) && profile.description) {
+        parsed.data.blurb = profile.description.slice(0, 500);
+      }
+    } catch {
+      /* keep submitted fields */
+    }
+  }
+
   const row = await prisma.siteConfig.upsert({
     where: { id: SITE_CONFIG_ID },
     create: {
@@ -132,10 +159,58 @@ export async function readSiteConfigPublic(): Promise<SiteConfigPublic> {
   return toPublic(row);
 }
 
-/** Public read for the /looting marketing page. */
+/** Public read for the /looting marketing page — config + live market + OHLCV when CA is set. */
 export async function registerLootingTokenRoutes(app: FastifyInstance) {
   app.get("/api/looting-token", async () => {
-    const data = await readSiteConfigPublic();
-    return { data };
+    const config = await readSiteConfigPublic();
+    let market = null;
+    let candles: Array<{ t: number; o: number; h: number; l: number; c: number; v: number }> = [];
+    let liveLogo = config.logo;
+    let liveSymbol = config.symbol;
+    let liveName = config.name;
+    let description = "";
+    let socials = {
+      twitter: "",
+      telegram: "",
+      discord: "",
+      website: "",
+      farcaster: "",
+    };
+
+    if (config.address) {
+      try {
+        const profile = await resolveTokenProfile(config.address);
+        liveLogo = browserLogoUrl(profile.logo || config.logo) || profile.logo || config.logo;
+        liveSymbol = profile.symbol || config.symbol;
+        liveName = profile.name || config.name;
+        description = profile.description || "";
+        socials = profile.socials;
+      } catch {
+        /* keep stored */
+      }
+      try {
+        market = await loadLootingLiveMarket(config.address);
+      } catch {
+        market = null;
+      }
+      try {
+        candles = await loadLootingCandles(config.address, market?.priceUsd ?? null);
+      } catch {
+        candles = [];
+      }
+    }
+
+    return {
+      data: {
+        ...config,
+        symbol: liveSymbol,
+        name: liveName,
+        logo: liveLogo,
+        description,
+        socials,
+        market,
+        candles,
+      },
+    };
   });
 }
