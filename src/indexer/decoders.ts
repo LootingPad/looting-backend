@@ -12,6 +12,7 @@ import {
 } from "../abi/looting.js";
 import { env } from "../config/env.js";
 import { prisma } from "../db/prisma.js";
+import { recordStakingActivity } from "../lib/actions.js";
 import { ensureWallet, normalizeAddress } from "../lib/utils.js";
 
 function asAddress(value: unknown): string {
@@ -223,17 +224,14 @@ async function handleVaultLog(log: Log, vaultDbId: string, vaultId: bigint) {
         },
       });
 
-      await prisma.stakingActivity.create({
-        data: {
-          chainId: env.CHAIN_ID,
-          vaultId: vaultId.toString(),
-          vaultDbId,
-          walletAddress: wallet,
-          kind: "stake",
-          lockId,
-          amount: amount.toString(),
-          txHash: log.transactionHash?.toLowerCase(),
-        },
+      await recordStakingActivity({
+        vaultId: vaultId.toString(),
+        vaultDbId,
+        walletAddress: wallet,
+        kind: "stake",
+        lockId,
+        amount: amount.toString(),
+        txHash: log.transactionHash ?? undefined,
       });
     }
 
@@ -269,17 +267,14 @@ async function handleVaultLog(log: Log, vaultDbId: string, vaultId: bigint) {
         });
       }
 
-      await prisma.stakingActivity.create({
-        data: {
-          chainId: env.CHAIN_ID,
-          vaultId: vaultId.toString(),
-          vaultDbId,
-          walletAddress: wallet,
-          kind: "unstake",
-          lockId,
-          amount: amount.toString(),
-          txHash: log.transactionHash?.toLowerCase(),
-        },
+      await recordStakingActivity({
+        vaultId: vaultId.toString(),
+        vaultDbId,
+        walletAddress: wallet,
+        kind: "unstake",
+        lockId,
+        amount: amount.toString(),
+        txHash: log.transactionHash ?? undefined,
       });
     }
 
@@ -292,18 +287,15 @@ async function handleVaultLog(log: Log, vaultDbId: string, vaultId: bigint) {
         where: { id: vaultDbId },
         data: { rewardRemaining: { decrement: amount.toString() } },
       });
-      await prisma.stakingActivity.create({
-        data: {
-          chainId: env.CHAIN_ID,
-          vaultId: vaultId.toString(),
-          vaultDbId,
-          walletAddress: wallet,
-          kind: "claim",
-          lockId,
-          amount: "0",
-          reward: amount.toString(),
-          txHash: log.transactionHash?.toLowerCase(),
-        },
+      await recordStakingActivity({
+        vaultId: vaultId.toString(),
+        vaultDbId,
+        walletAddress: wallet,
+        kind: "claim",
+        lockId,
+        amount: "0",
+        reward: amount.toString(),
+        txHash: log.transactionHash ?? undefined,
       });
     }
 

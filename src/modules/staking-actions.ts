@@ -4,17 +4,42 @@ import type { FastifyInstance } from "fastify";
 import { stakingVaultAbi, devLockAbi } from "../abi/looting.js";
 import {
   buildApproveIfNeeded,
+  findReusablePending,
   parseLockId,
   parseRawAmount,
   recordStakingActivity,
   resolveVault,
+  rewardFromClaimReceipt,
+  savePendingAction,
   waitForReceipt,
   waitForReceiptSafe,
   type TxBundle,
 } from "../lib/actions.js";
+import type { PendingActionKind } from "@prisma/client";
 import { contractsConfigured, env } from "../config/env.js";
 import { prisma } from "../db/prisma.js";
 import { normalizeAddress } from "../lib/utils.js";
+import type { FastifyReply } from "fastify";
+
+async function replyIfReused(
+  reply: FastifyReply,
+  idempotencyKey: string | undefined,
+  kind: PendingActionKind,
+  wallet: string,
+) {
+  const reused = await findReusablePending(idempotencyKey, kind, wallet);
+  if (reused && "conflict" in reused) return reply.code(409).send({ error: "IDEMPOTENCY_CONFLICT" });
+  if (reused && "action" in reused) {
+    const payload = reused.action.payload as { tx: TxBundle; approveTx?: TxBundle | null };
+    return {
+      actionId: reused.action.id,
+      tx: payload.tx,
+      approveTx: payload.approveTx ?? null,
+      needsApproval: Boolean(payload.approveTx),
+    };
+  }
+  return null;
+}
 
 export async function registerStakingActionRoutes(app: FastifyInstance) {
   app.post("/api/staking/stake/prepare", async (req, reply) => {
@@ -33,6 +58,9 @@ export async function registerStakingActionRoutes(app: FastifyInstance) {
     } catch {
       return reply.code(400).send({ error: "INVALID_ADDRESS" });
     }
+
+    const reusedStake = await replyIfReused(reply, body.idempotencyKey, "staking_stake", wallet);
+    if (reusedStake) return reusedStake;
 
     const vault = await resolveVault(body.vaultId);
     if (!vault) return reply.code(404).send({ error: "VAULT_NOT_FOUND" });
@@ -63,21 +91,19 @@ export async function registerStakingActionRoutes(app: FastifyInstance) {
       amount,
     });
 
-    const pending = await prisma.pendingAction.create({
-      data: {
-        kind: "staking_stake",
+    const pending = await savePendingAction({
+      kind: "staking_stake",
+      wallet,
+      idempotency: body.idempotencyKey,
+      payload: {
         wallet,
-        idempotency: body.idempotencyKey,
-        payload: {
-          wallet,
-          vaultId: vault.vaultId.toString(),
-          vaultDbId: vault.id,
-          vaultAddress: vault.vaultAddress,
-          amount: amount.toString(),
-          lockId,
-          tx,
-          approveTx,
-        },
+        vaultId: vault.vaultId.toString(),
+        vaultDbId: vault.id,
+        vaultAddress: vault.vaultAddress,
+        amount: amount.toString(),
+        lockId,
+        tx,
+        approveTx,
       },
     });
 
@@ -147,6 +173,9 @@ export async function registerStakingActionRoutes(app: FastifyInstance) {
       return reply.code(400).send({ error: "INVALID_ADDRESS" });
     }
 
+    const reusedUnstake = await replyIfReused(reply, body.idempotencyKey, "staking_unstake", wallet);
+    if (reusedUnstake) return reusedUnstake;
+
     const vault = await resolveVault(body.vaultId);
     if (!vault) return reply.code(404).send({ error: "VAULT_NOT_FOUND" });
 
@@ -169,19 +198,17 @@ export async function registerStakingActionRoutes(app: FastifyInstance) {
       value: "0",
     };
 
-    const pending = await prisma.pendingAction.create({
-      data: {
-        kind: "staking_unstake",
+    const pending = await savePendingAction({
+      kind: "staking_unstake",
+      wallet,
+      idempotency: body.idempotencyKey,
+      payload: {
         wallet,
-        idempotency: body.idempotencyKey,
-        payload: {
-          wallet,
-          vaultId: vault.vaultId.toString(),
-          vaultDbId: vault.id,
-          amount: amount.toString(),
-          lockId,
-          tx,
-        },
+        vaultId: vault.vaultId.toString(),
+        vaultDbId: vault.id,
+        amount: amount.toString(),
+        lockId,
+        tx,
       },
     });
 
@@ -245,6 +272,9 @@ export async function registerStakingActionRoutes(app: FastifyInstance) {
       return reply.code(400).send({ error: "INVALID_ADDRESS" });
     }
 
+    const reusedClaim = await replyIfReused(reply, body.idempotencyKey, "staking_claim", wallet);
+    if (reusedClaim) return reusedClaim;
+
     const vault = await resolveVault(body.vaultId);
     if (!vault) return reply.code(404).send({ error: "VAULT_NOT_FOUND" });
 
@@ -259,18 +289,16 @@ export async function registerStakingActionRoutes(app: FastifyInstance) {
       value: "0",
     };
 
-    const pending = await prisma.pendingAction.create({
-      data: {
-        kind: "staking_claim",
+    const pending = await savePendingAction({
+      kind: "staking_claim",
+      wallet,
+      idempotency: body.idempotencyKey,
+      payload: {
         wallet,
-        idempotency: body.idempotencyKey,
-        payload: {
-          wallet,
-          vaultId: vault.vaultId.toString(),
-          vaultDbId: vault.id,
-          lockId,
-          tx,
-        },
+        vaultId: vault.vaultId.toString(),
+        vaultDbId: vault.id,
+        lockId,
+        tx,
       },
     });
 
@@ -311,7 +339,7 @@ export async function registerStakingActionRoutes(app: FastifyInstance) {
       kind: "claim",
       lockId: payload.lockId,
       amount: "0",
-      reward: "0",
+      reward: rewardFromClaimReceipt(receipt.logs, payload.lockId),
       txHash: body.txHash,
     });
 
@@ -338,6 +366,9 @@ export async function registerDevLockClaimRoutes(app: FastifyInstance) {
       return reply.code(400).send({ error: "INVALID_ADDRESS" });
     }
 
+    const reusedLock = await replyIfReused(reply, body.idempotencyKey, "devlock_claim", wallet);
+    if (reusedLock) return reusedLock;
+
     const lockId = BigInt(String(body.lockId));
     const lock = await prisma.devLock.findUnique({
       where: { chainId_lockId: { chainId: env.CHAIN_ID, lockId } },
@@ -355,13 +386,11 @@ export async function registerDevLockClaimRoutes(app: FastifyInstance) {
       value: "0",
     };
 
-    const pending = await prisma.pendingAction.create({
-      data: {
-        kind: "devlock_claim",
-        wallet,
-        idempotency: body.idempotencyKey,
-        payload: { wallet, lockId: lockId.toString(), tx },
-      },
+    const pending = await savePendingAction({
+      kind: "devlock_claim",
+      wallet,
+      idempotency: body.idempotencyKey,
+      payload: { wallet, lockId: lockId.toString(), tx },
     });
 
     return { actionId: pending.id, tx };

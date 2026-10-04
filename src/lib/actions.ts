@@ -1,5 +1,6 @@
 import type { Address, Hex } from "viem";
-import { encodeFunctionData } from "viem";
+import { decodeEventLog, encodeFunctionData } from "viem";
+import type { PendingActionKind, Prisma } from "@prisma/client";
 import { erc20Abi, stakingVaultAbi, devLockAbi } from "../abi/looting.js";
 import { getPublicClient } from "../clients/rpc.js";
 import { env } from "../config/env.js";
@@ -126,6 +127,14 @@ export async function recordStakingActivity(input: {
   txHash?: string;
   at?: Date;
 }) {
+  const txHash = input.txHash?.toLowerCase();
+  if (txHash) {
+    const existing = await prisma.stakingActivity.findFirst({
+      where: { chainId: env.CHAIN_ID, txHash, kind: input.kind, lockId: input.lockId },
+    });
+    if (existing) return;
+  }
+
   await prisma.stakingActivity.create({
     data: {
       chainId: env.CHAIN_ID,
@@ -136,10 +145,67 @@ export async function recordStakingActivity(input: {
       lockId: input.lockId,
       amount: input.amount.toString(),
       reward: (input.reward ?? 0).toString(),
-      txHash: input.txHash?.toLowerCase(),
+      txHash,
       at: input.at ?? new Date(),
     },
   });
+}
+
+type PendingPayload = Prisma.InputJsonValue;
+
+export async function findReusablePending(idempotencyKey: string | undefined, kind: PendingActionKind, wallet: string) {
+  if (!idempotencyKey) return null;
+  const existing = await prisma.pendingAction.findUnique({ where: { idempotency: idempotencyKey } });
+  if (!existing) return null;
+  if (existing.kind !== kind || existing.wallet !== wallet) return { conflict: true as const };
+  return { action: existing };
+}
+
+export async function savePendingAction(data: {
+  kind: PendingActionKind;
+  wallet: string;
+  idempotency?: string;
+  payload: PendingPayload;
+}) {
+  try {
+    return await prisma.pendingAction.create({
+      data: {
+        kind: data.kind,
+        wallet: data.wallet,
+        idempotency: data.idempotency,
+        payload: data.payload,
+      },
+    });
+  } catch (err) {
+    const code = err && typeof err === "object" && "code" in err ? String((err as { code: unknown }).code) : "";
+    if (code === "P2002" && data.idempotency) {
+      const existing = await prisma.pendingAction.findUnique({ where: { idempotency: data.idempotency } });
+      if (existing && existing.kind === data.kind && existing.wallet === data.wallet) return existing;
+    }
+    throw err;
+  }
+}
+
+export function rewardFromClaimReceipt(
+  logs: ReadonlyArray<{ data: Hex; topics: readonly Hex[] }>,
+  lockId: number,
+): string {
+  for (const log of logs) {
+    try {
+      if (log.topics.length === 0) continue;
+      const decoded = decodeEventLog({
+        abi: stakingVaultAbi,
+        data: log.data,
+        topics: [log.topics[0], ...log.topics.slice(1)],
+      });
+      if (decoded.eventName !== "StakingRewardsClaimed") continue;
+      if (Number(decoded.args.lockId) !== lockId) continue;
+      return decoded.args.amount.toString();
+    } catch {
+      // unrelated log
+    }
+  }
+  return "0";
 }
 
 export function feLockLabel(lockId: number) {

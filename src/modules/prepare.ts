@@ -6,6 +6,12 @@ import { quoteAndPrepareSwap } from "../clients/uniswap.js";
 import { getPublicClient } from "../clients/rpc.js";
 import { contractsConfigured, env } from "../config/env.js";
 import { prisma } from "../db/prisma.js";
+import {
+  buildApproveIfNeeded,
+  findReusablePending,
+  parseRawAmount,
+  savePendingAction,
+} from "../lib/actions.js";
 import { normalizeAddress } from "../lib/utils.js";
 import { launchViaLootingEvent, tokenAbi, tokenLaunchedEvent } from "../pons-adapter/abi.js";
 import { publishTrenchPair } from "../pons-adapter/hub.js";
@@ -523,6 +529,30 @@ export async function registerPrepareRoutes(app: FastifyInstance) {
       return reply.code(400).send({ error: "INVALID_ADDRESS" });
     }
 
+    const reused = await findReusablePending(body.idempotencyKey, "staking_create", wallet);
+    if (reused && "conflict" in reused) return reply.code(409).send({ error: "IDEMPOTENCY_CONFLICT" });
+    if (reused && "action" in reused) {
+      const payload = reused.action.payload as {
+        tx: TxBundle;
+        approveTx?: TxBundle | null;
+        fee: string;
+      };
+      return {
+        actionId: reused.action.id,
+        tx: payload.tx,
+        approveTx: payload.approveTx ?? null,
+        needsApproval: Boolean(payload.approveTx),
+        feeWei: payload.fee,
+      };
+    }
+
+    let rewardAmount: bigint;
+    try {
+      rewardAmount = parseRawAmount(body.rewardAmount);
+    } catch {
+      return reply.code(400).send({ error: "INVALID_AMOUNT" });
+    }
+
     const client = getPublicClient();
     const fee = (await client.readContract({
       address: env.STAKING_FACTORY_ADDRESS as Address,
@@ -535,7 +565,7 @@ export async function registerPrepareRoutes(app: FastifyInstance) {
       functionName: "createVault",
       args: [
         stakeToken as Address,
-        BigInt(body.rewardAmount),
+        rewardAmount,
         BigInt(body.endsAt),
         body.lockMask,
         body.aprBps,
@@ -547,17 +577,27 @@ export async function registerPrepareRoutes(app: FastifyInstance) {
       data,
       value: fee.toString(),
     };
-
-    const pending = await prisma.pendingAction.create({
-      data: {
-        kind: "staking_create",
-        wallet,
-        idempotency: body.idempotencyKey,
-        payload: { ...body, wallet, stakeToken, fee: fee.toString(), tx },
-      },
+    const approveTx = await buildApproveIfNeeded({
+      wallet,
+      token: stakeToken,
+      spender: env.STAKING_FACTORY_ADDRESS,
+      amount: rewardAmount,
     });
 
-    return { actionId: pending.id, tx, feeWei: fee.toString() };
+    const pending = await savePendingAction({
+      kind: "staking_create",
+      wallet,
+      idempotency: body.idempotencyKey,
+      payload: { ...body, wallet, stakeToken, fee: fee.toString(), tx, approveTx },
+    });
+
+    return {
+      actionId: pending.id,
+      tx,
+      approveTx: approveTx ?? null,
+      needsApproval: Boolean(approveTx),
+      feeWei: fee.toString(),
+    };
   });
 
   app.post("/api/staking/events/confirm", async (req, reply) => {
@@ -609,6 +649,30 @@ export async function registerPrepareRoutes(app: FastifyInstance) {
       return reply.code(400).send({ error: "INVALID_ADDRESS" });
     }
 
+    const reused = await findReusablePending(body.idempotencyKey, "devlock_create", wallet);
+    if (reused && "conflict" in reused) return reply.code(409).send({ error: "IDEMPOTENCY_CONFLICT" });
+    if (reused && "action" in reused) {
+      const payload = reused.action.payload as {
+        tx: TxBundle;
+        approveTx?: TxBundle | null;
+        fee: string;
+      };
+      return {
+        actionId: reused.action.id,
+        tx: payload.tx,
+        approveTx: payload.approveTx ?? null,
+        needsApproval: Boolean(payload.approveTx),
+        feeWei: payload.fee,
+      };
+    }
+
+    let amount: bigint;
+    try {
+      amount = parseRawAmount(body.amount);
+    } catch {
+      return reply.code(400).send({ error: "INVALID_AMOUNT" });
+    }
+
     const client = getPublicClient();
     const fee = (await client.readContract({
       address: env.DEV_LOCK_ADDRESS as Address,
@@ -623,7 +687,7 @@ export async function registerPrepareRoutes(app: FastifyInstance) {
             functionName: "createVesting",
             args: [
               token as Address,
-              BigInt(body.amount),
+              amount,
               BigInt(body.cliffAt ?? body.unlockAt),
               BigInt(body.unlockAt),
               body.cadence ?? 0,
@@ -632,7 +696,7 @@ export async function registerPrepareRoutes(app: FastifyInstance) {
         : encodeFunctionData({
             abi: devLockAbi,
             functionName: "createTimeLock",
-            args: [token as Address, BigInt(body.amount), BigInt(body.unlockAt)],
+            args: [token as Address, amount, BigInt(body.unlockAt)],
           });
 
     const tx: TxBundle = {
@@ -640,17 +704,27 @@ export async function registerPrepareRoutes(app: FastifyInstance) {
       data,
       value: fee.toString(),
     };
-
-    const pending = await prisma.pendingAction.create({
-      data: {
-        kind: "devlock_create",
-        wallet,
-        idempotency: body.idempotencyKey,
-        payload: { ...body, wallet, token, fee: fee.toString(), tx },
-      },
+    const approveTx = await buildApproveIfNeeded({
+      wallet,
+      token,
+      spender: env.DEV_LOCK_ADDRESS,
+      amount,
     });
 
-    return { actionId: pending.id, tx, feeWei: fee.toString() };
+    const pending = await savePendingAction({
+      kind: "devlock_create",
+      wallet,
+      idempotency: body.idempotencyKey,
+      payload: { ...body, wallet, token, fee: fee.toString(), tx, approveTx },
+    });
+
+    return {
+      actionId: pending.id,
+      tx,
+      approveTx: approveTx ?? null,
+      needsApproval: Boolean(approveTx),
+      feeWei: fee.toString(),
+    };
   });
 
   app.post("/api/devlock/confirm", async (req, reply) => {
