@@ -41,8 +41,23 @@ async function main() {
     bodyLimit: 2_500_000,
   });
 
+  const corsOrigins = env.CORS_ORIGIN.split(",")
+    .map((s) => s.trim())
+    .filter(Boolean)
+    .map((origin) =>
+      /^https?:\/\/(www\.)?lootingpad\.com$/i.test(origin)
+        ? "https://looting-web-production.up.railway.app"
+        : origin,
+    );
+  for (const extra of [
+    "https://looting-web-production.up.railway.app",
+    "https://looting-admin-production.up.railway.app",
+  ]) {
+    if (!corsOrigins.includes("*") && !corsOrigins.includes(extra)) corsOrigins.push(extra);
+  }
+
   await app.register(cors, {
-    origin: env.CORS_ORIGIN.split(",").map((s) => s.trim()),
+    origin: corsOrigins,
   });
 
   await registerHealthRoutes(app);

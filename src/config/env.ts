@@ -87,8 +87,12 @@ const envSchema = z.object({
   PUBLIC_API_BASE: z
     .string()
     .optional()
-    .default("https://api.lootingpad.com")
-    .transform((v) => v.trim().replace(/\/$/, "")),
+    .default("https://looting-backend-production.up.railway.app")
+    .transform((v) => {
+      const clean = v.trim().replace(/\/$/, "");
+      if (/api\.lootingpad\.com/i.test(clean)) return "https://looting-backend-production.up.railway.app";
+      return clean;
+    }),
   /** Pinata JWT for pinning launch logos to public IPFS (ipfs://… on-chain). */
   PINATA_JWT: z.string().optional().default(""),
   TRENCH_POLL_MS: z.coerce.number().int().positive().default(200),

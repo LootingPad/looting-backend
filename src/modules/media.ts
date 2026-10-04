@@ -24,7 +24,7 @@ function publicApiBase(req: FastifyRequest): string {
   if (host && !isLocalHost(host)) return `${proto === "http" ? "https" : proto}://${host}`;
 
   // Never write localhost into on-chain logos — terminals like GMGN can't fetch it.
-  return "https://api.lootingpad.com";
+  return "https://looting-backend-production.up.railway.app";
 }
 
 function isLocalHost(host: string) {

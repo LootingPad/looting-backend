@@ -203,12 +203,25 @@ export async function registerLaunchRoutes(app: FastifyInstance) {
       return reply.code(503).send({ error: "PONSAPI_DISABLED" });
     }
 
+    const requestOrigin = String(req.headers.origin || "");
+    const allowed = new Set(
+      [
+        ...env.CORS_ORIGIN.split(",").map((s) => s.trim()),
+        "https://looting-web-production.up.railway.app",
+        "https://looting-admin-production.up.railway.app",
+      ].filter(Boolean),
+    );
+    const allowOrigin =
+      allowed.has("*") || (requestOrigin && allowed.has(requestOrigin))
+        ? requestOrigin || "*"
+        : "https://looting-web-production.up.railway.app";
+
     reply.hijack();
     reply.raw.writeHead(200, {
       "Content-Type": "text/event-stream; charset=utf-8",
       "Cache-Control": "no-cache, no-transform",
       Connection: "keep-alive",
-      "Access-Control-Allow-Origin": env.CORS_ORIGIN.split(",")[0]?.trim() || "*",
+      "Access-Control-Allow-Origin": allowOrigin,
     });
     reply.raw.write(": connected\n\n");
 
